@@ -25,7 +25,7 @@ Claude Code ──(A) 純 HTTP 明文──▶ Interlude proxy ──(B) 正常 
 ## 快速上手
 
 ```bash
-# 1. 啟動 proxy（雙 listener）
+# 1. 啟動 proxy（三個 listener）
 uv run proxy.py
 
 # 2. 另開終端，把 Claude Code 指過來
@@ -39,7 +39,8 @@ proxy 啟動後會印：
 
 ```
 [interlude] claude: http://127.0.0.1:8788 -> https://api.anthropic.com
-[interlude] codex:  http://127.0.0.1:8789 -> https://api.openai.com
+[interlude] codex:  http://127.0.0.1:8789 -> https://api.openai.com   (Codex + API key)
+[interlude] codex:  http://127.0.0.1:8790 -> https://chatgpt.com      (Codex + ChatGPT 登入)
 [interlude] logging to .interlude/log-<時間戳>.jsonl
 ```
 
@@ -60,14 +61,18 @@ ANTHROPIC_BASE_URL=http://localhost:8788 claude -p "say hi"
 ### Codex
 
 Codex 內建的 `openai` provider **不吃** base URL 覆寫（`OPENAI_BASE_URL` 會被忽略），
-必須定義自訂 provider。
+必須定義自訂 provider。依登入方式選一條。
 
-一次性快測：
+#### A. ChatGPT 登入（建議，免 API key）
+
+自訂 provider 指向 proxy 的 **chatgpt.com** listener（port 8790，路徑 `/backend-api/codex`）。
+Codex 會帶著你的 ChatGPT token，proxy 轉發到真正的
+`https://chatgpt.com/backend-api/codex/responses`，回應也錄得到：
 
 ```bash
 codex exec -s read-only \
   -c model_provider=interlude \
-  -c 'model_providers.interlude.base_url="http://localhost:8789/v1"' \
+  -c 'model_providers.interlude.base_url="http://localhost:8790/backend-api/codex"' \
   -c 'model_providers.interlude.wire_api="responses"' \
   "say hi"
 ```
@@ -77,19 +82,33 @@ codex exec -s read-only \
 ```toml
 [model_providers.interlude]
 name = "Interlude"
-base_url = "http://localhost:8789/v1"
+base_url = "http://localhost:8790/backend-api/codex"
 wire_api = "responses"
 ```
 
-然後每次用 `-c` 切過去（**別**設頂層 `model_provider`，否則 proxy 沒開時 Codex 會壞）：
+然後每次用 `-c model_provider=interlude` 切過去（**別**設頂層 `model_provider`，
+否則 proxy 沒開時 Codex 會壞）：
 
 ```bash
 codex -c model_provider=interlude exec -s read-only "say hi"
 ```
 
-> **Note** — 若用 ChatGPT 登入且沒有 `OPENAI_API_KEY`，Codex 對 `api.openai.com` 會回
-> **401**（缺 `api.responses.write` scope）。proxy 照樣完整錄到請求；要 Codex 真的跑通
-> 需要一把有對應 scope 的 OpenAI API key。
+#### B. OpenAI API key
+
+若你有一把帶 `api.responses.write` scope 的 `OPENAI_API_KEY`，改指向 proxy 的
+**api.openai.com** listener（port 8789，路徑 `/v1`）：
+
+```bash
+codex exec -s read-only \
+  -c model_provider=interlude \
+  -c 'model_providers.interlude.base_url="http://localhost:8789/v1"' \
+  -c 'model_providers.interlude.wire_api="responses"' \
+  "say hi"
+```
+
+> **Note** — 用 ChatGPT 登入卻指到 `api.openai.com`（route B 但沒金鑰）會回 **401**
+> （ChatGPT token 缺 `api.responses.write` scope）。請求仍會完整錄到，只是收不到回應——
+> 改用 route A 即可。
 
 ## 錄到什麼
 
@@ -208,7 +227,7 @@ uv run analyze.py
   只保留白名單欄位。
 - proxy 剝掉請求的 `accept-encoding`，所以錄到的 bytes 永遠是明文（免處理 gzip/br）。
 - 自查惡意連線：`lsof -nP -iTCP -sTCP:ESTABLISHED | grep Python`，確認 proxy 只連
-  `api.anthropic.com` / `api.openai.com`。
+  `api.anthropic.com` / `api.openai.com` / `chatgpt.com`。
 
 ## 擴充新 agent
 
@@ -221,14 +240,14 @@ uv run analyze.py
 |---|---|
 | `port 8788 already in use` | 上一個 proxy 還在。`lsof -nP -iTCP:8788 -sTCP:LISTEN` 找 PID → `kill <PID>` |
 | Codex 沒被錄到，啟動印 `provider: openai` | 用了 `OPENAI_BASE_URL` 捷徑，被內建 provider 忽略。改用自訂 provider |
-| Codex 回 401 | ChatGPT 登入無 scope，預期行為；請求仍有錄到 |
+| Codex 回 401（缺 `api.responses.write` scope） | 你用 ChatGPT 登入卻指到 `api.openai.com`（8789）。改用 route A（8790 + `/backend-api/codex`），見「把 agent 指過來 › Codex」 |
 | agent 拒收 `http://` | 退回 TLS：proxy 用自簽 CA 終結 TLS，Claude Code 設 `NODE_EXTRA_CA_CERTS` 信任（目前用不到） |
 
 ## 檔案
 
 | 檔 | 用途 |
 |---|---|
-| `proxy.py` | 雙 listener reverse proxy，streaming relay + SSE tee/重組 |
+| `proxy.py` | 三 listener reverse proxy，streaming relay + SSE tee/重組 |
 | `analyze.py` | 跨請求 diff、固定骨幹 vs 動態插槽、跨 agent 比較 |
 | `dogfood.sh` | 一鍵端到端驗證 |
 | `.interlude/` | JSONL 輸出（gitignored，敏感） |

@@ -5,23 +5,25 @@
 # captured JSONL (correct agent/wire tags, system/tools/messages present, and
 # zero credential leaks). Stops the proxy on exit.
 #
-# Note: on a ChatGPT-login Codex (no OPENAI_API_KEY) the Codex round-trip 401s
-# at the real API — that is an upstream auth-scope artifact, NOT a proxy fault.
-# The request is still captured, which is what this dogfood checks.
+# Codex uses a custom provider pointed at the proxy's chatgpt.com listener
+# (port 8790, /backend-api/codex), reusing the ChatGPT login — so the Codex
+# round-trip succeeds and its response is reassembled (no OPENAI_API_KEY needed).
 
 set -uo pipefail
 cd "$(dirname "$0")"
 
 CLAUDE_PORT=8788
-CODEX_PORT=8789
+CODEX_PORT=8790            # Codex via ChatGPT-login backend (chatgpt.com)
+PROXY_PORTS="8788 8789 8790"
 
 port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+all_bound() { for p in $PROXY_PORTS; do port_busy "$p" || return 1; done; }
 
 # --- preflight ---
 command -v uv     >/dev/null || { echo "FAIL: 'uv' not on PATH";     exit 1; }
 command -v claude >/dev/null || { echo "FAIL: 'claude' not on PATH"; exit 1; }
 command -v codex  >/dev/null || { echo "FAIL: 'codex' not on PATH";  exit 1; }
-for p in $CLAUDE_PORT $CODEX_PORT; do
+for p in $PROXY_PORTS; do
   if port_busy "$p"; then
     echo "FAIL: port $p already in use (proxy already running?). Stop it and retry."
     exit 1
@@ -38,11 +40,11 @@ cleanup() { kill "$PROXY_PID" 2>/dev/null; }
 trap cleanup EXIT
 
 for _ in $(seq 1 25); do
-  port_busy "$CLAUDE_PORT" && port_busy "$CODEX_PORT" && break
+  all_bound && break
   sleep 0.2
 done
-if ! { port_busy "$CLAUDE_PORT" && port_busy "$CODEX_PORT"; }; then
-  echo "FAIL: proxy did not bind both ports. Output:"; cat .interlude/_dogfood-proxy.log
+if ! all_bound; then
+  echo "FAIL: proxy did not bind all ports ($PROXY_PORTS). Output:"; cat .interlude/_dogfood-proxy.log
   exit 1
 fi
 
@@ -68,14 +70,14 @@ echo "    claude replied: ${CLAUDE_OUT}"
 
 # --- drive Codex via a custom provider (env-var shortcut is ignored by the
 #     built-in openai provider, so we must define our own) ---
-echo "==> Codex through proxy (custom provider; 401 on ChatGPT-login is expected)"
+echo "==> Codex through proxy (ChatGPT-login backend)"
 ( cd /tmp && codex exec -s read-only --skip-git-repo-check \
     -c model_provider=interlude \
     -c 'model_providers.interlude.name="Interlude"' \
-    -c "model_providers.interlude.base_url=\"http://localhost:$CODEX_PORT/v1\"" \
+    -c "model_providers.interlude.base_url=\"http://localhost:$CODEX_PORT/backend-api/codex\"" \
     -c 'model_providers.interlude.wire_api="responses"' \
-    "Reply with exactly PONG." >/dev/null 2>&1 )
-echo "    codex exit: $? (capture is what matters, not the upstream status)"
+    "Reply with exactly the word PONG and nothing else." >/dev/null 2>&1 )
+echo "    codex exit: $?"
 
 sleep 0.3  # let the proxy flush the final append
 
@@ -118,19 +120,20 @@ claude_req  = captured("claude", "claude-messages")
 codex_req   = captured("codex",  "codex-responses")
 # Claude succeeds → streamed, reassembled text non-empty.
 claude_resp = response("claude", lambda r: r.get("stream") and (r.get("reconstructed") or {}).get("text"))
-# Codex 401s on ChatGPT-login → a response record still lands (status present).
-codex_resp  = response("codex",  lambda r: "status" in r)
+# Codex round-trips via the ChatGPT backend → streamed, reassembled (status 200).
+codex_resp  = response("codex",  lambda r: r.get("status") == 200 and (r.get("reconstructed") or {}).get("text"))
 
 def shape(ex):
     def d(v): return f"{type(v).__name__}(len={len(v)})" if isinstance(v, (list, str)) else type(v).__name__
     return f"system={d(ex['system'])} tools={d(ex['tools'])} messages={d(ex['messages'])}"
 
 ctext = (claude_resp.get("reconstructed") or {}).get("text") if claude_resp else None
+xtext = (codex_resp.get("reconstructed") or {}).get("text") if codex_resp else None
 print(f"   records                  : {len(recs)} ({len(reqs)} req / {len(resps)} resp)")
 print(f"   claude req captured      : {'YES ' + shape(claude_req) if claude_req else 'NO'}")
 print(f"   codex  req captured      : {'YES ' + shape(codex_req)  if codex_req  else 'NO'}")
 print(f"   claude resp reassembled  : {'YES text=' + repr(ctext) if claude_resp else 'NO'}")
-print(f"   codex  resp captured     : {'YES status=' + str(codex_resp.get('status')) if codex_resp else 'NO'}")
+print(f"   codex  resp reassembled  : {'YES text=' + repr(xtext) if codex_resp else 'NO'}")
 print(f"   header credential leaks  : {header_leaks}")
 print(f"   value credential leaks   : {value_leaks}")
 

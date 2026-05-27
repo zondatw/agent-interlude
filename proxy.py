@@ -26,7 +26,8 @@ from datetime import datetime, timezone
 # (port, upstream_host, agent_label) — add a row to support another agent.
 LISTENERS = [
     (8788, "api.anthropic.com", "claude"),
-    (8789, "api.openai.com", "codex"),
+    (8789, "api.openai.com", "codex"),    # Codex via OpenAI API key (custom provider)
+    (8790, "chatgpt.com", "codex"),       # Codex via ChatGPT login (chatgpt_base_url)
 ]
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".interlude")
@@ -245,27 +246,32 @@ def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", erro
         elif cenc and cenc.lower() not in ("", "identity"):
             rec["note"] = f"unparsed content-encoding: {cenc}"
             rec["bytes"] = len(body)
-        elif "text/event-stream" in (ctype or "").lower():
-            events = parse_sse(body.decode("utf-8", "replace"))
-            types = Counter(
-                ev.get("event")
-                or (ev["data"].get("type") if isinstance(ev.get("data"), dict) else None)
-                for ev in events)
-            rec.update(stream=True, event_count=len(events),
-                       event_types=dict(types), reconstructed=reconstruct(wire, events))
         else:
-            txt = body.decode("utf-8", "replace")
-            rec["stream"] = False
-            try:
-                obj = json.loads(txt) if txt.strip() else None
-            except ValueError:
-                rec["body"] = _cap(txt)
+            text = body.decode("utf-8", "replace")
+            sniff = text[:256].lstrip()
+            # Detect SSE by content-type OR by sniffing the body, since some
+            # backends (e.g. the ChatGPT backend) mislabel the stream.
+            if "text/event-stream" in (ctype or "").lower() or sniff.startswith(("event:", "data:")):
+                events = parse_sse(text)
+                types = Counter(
+                    ev.get("event")
+                    or (ev["data"].get("type") if isinstance(ev.get("data"), dict) else None)
+                    for ev in events)
+                rec.update(stream=True, event_count=len(events),
+                           event_types=dict(types), reconstructed=reconstruct(wire, events))
             else:
-                if obj is not None and len(json.dumps(obj)) > MAX_BODY_JSON:
-                    rec["body"] = {"_truncated": True,
-                                   "_keys": list(obj) if isinstance(obj, dict) else None}
+                rec["stream"] = False
+                try:
+                    obj = json.loads(text) if text.strip() else None
+                except ValueError:
+                    rec["body"] = _cap(text)
                 else:
-                    rec["body"] = obj
+                    if obj is not None and len(json.dumps(obj)) > MAX_BODY_JSON:
+                        rec["body"] = {"_truncated": True,
+                                       "_keys": list(obj) if isinstance(obj, dict) else None}
+                    else:
+                        rec["body"] = obj
+        rec["content_type"] = ctype
         if truncated:
             rec["truncated"] = True
         _append(rec)
@@ -284,6 +290,14 @@ def make_handler(upstream_host, agent_label):
 
         def log_message(self, *args):
             pass  # silence default access logging; we print our own line
+
+        def handle(self):
+            # Backends keep side connections open (analytics, long-polls); when the
+            # agent drops them we get resets — swallow them quietly.
+            try:
+                super().handle()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
 
         def _handle(self):
             xid = uuid.uuid4().hex[:12]
