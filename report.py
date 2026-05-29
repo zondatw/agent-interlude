@@ -23,6 +23,7 @@ import hashlib
 import html
 import http.server
 import json
+import math
 import os
 import re
 import statistics
@@ -190,6 +191,28 @@ def _parse_duration(s):
         "h": timedelta(hours=n),
         "d": timedelta(days=n),
     }.get(unit)
+
+
+def _parse_int(value, default=None):
+    """Read a single int from a query-string list, falling back to `default`."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _rtt_width_pct(seconds):
+    """Map a round-trip duration to a 0–100 percent bar width on a log scale.
+    10ms barely registers, 1s sits around the midpoint, 60s pins the bar."""
+    if seconds is None or seconds <= 0:
+        return 0
+    val = math.log10(max(seconds, 0.001))
+    # log10(0.01)=-2 → 0%, log10(100)=2 → 100%; clamp + give very small RTTs
+    # a 2% floor so the bar is at least visible.
+    pct = (val + 2) * 25
+    return max(2.0, min(100.0, pct))
 
 
 def _compute_time_range(qs, requests):
@@ -434,6 +457,93 @@ def model_timeline(ctx):
         if ts_in_p:
             prev_ts = ts_in_p
         exchanges += 1
+    # --- Session auto-grouping -----------------------------------------------
+    # Walk the events in order and start a new session whenever the gap from
+    # the previous response to the next request exceeds `session_gap_s`.
+    session_gap_s = _parse_int(ctx["qs"].get("session_gap"), default=30)
+    sessions = []
+    current_id = -1
+    last_in_dt = None
+    for ev in events:
+        if ev["dir"] == "out":
+            out_dt = _parse_ts(ev["ts"])
+            should_split = (
+                current_id < 0
+                or (last_in_dt is not None and out_dt is not None
+                    and (out_dt - last_in_dt).total_seconds() > session_gap_s)
+            )
+            if should_split:
+                current_id += 1
+                sessions.append({
+                    "id": current_id,
+                    "start_ts": ev["ts"],
+                    "end_ts": ev["ts"],
+                    "exchange_count": 0,
+                    "_agents_set": set(),
+                    "tokens_in": 0, "tokens_out": 0, "tokens_cached": 0,
+                })
+            s = sessions[-1]
+            s["exchange_count"] += 1
+            if ev.get("agent"):
+                s["_agents_set"].add(ev["agent"])
+        else:  # "in"
+            if sessions:
+                s = sessions[-1]
+                s["end_ts"] = ev["ts"] or s["end_ts"]
+                for k in ("tokens_in", "tokens_out", "tokens_cached"):
+                    v = ev.get(k)
+                    if isinstance(v, int):
+                        s[k] += v
+            in_dt = _parse_ts(ev["ts"])
+            if in_dt:
+                last_in_dt = in_dt
+        ev["session_id"] = current_id
+    for s in sessions:
+        s["agents"] = sorted(s.pop("_agents_set"))
+
+    # --- Hour density histogram ---------------------------------------------
+    # Count exchanges (out events) per UTC hour. Used to render a quick visual
+    # at the top of the page that doubles as a one-click filter.
+    bucket_counts = defaultdict(int)
+    for ev in events:
+        if ev["dir"] != "out":
+            continue
+        t = _parse_ts(ev["ts"])
+        if t:
+            hour = t.replace(minute=0, second=0, microsecond=0)
+            bucket_counts[hour.isoformat()] += 1
+    hour_buckets = [{"hour": h, "count": c}
+                    for h, c in sorted(bucket_counts.items())]
+
+    # --- Token usage series (per-call + cumulative) -------------------------
+    # Build the time series from "in" events (tokens are only known once the
+    # response was reassembled). Each point carries the per-call breakdown
+    # AND the running total so the chart can show both at once.
+    tokens_series = []
+    running = 0
+    for ev in events:
+        if ev["dir"] != "in":
+            continue
+        in_t = ev.get("tokens_in") or 0
+        out_t = ev.get("tokens_out") or 0
+        cached_t = ev.get("tokens_cached") or 0
+        if not isinstance(in_t, int):
+            in_t = 0
+        if not isinstance(out_t, int):
+            out_t = 0
+        if not isinstance(cached_t, int):
+            cached_t = 0
+        total = in_t + out_t
+        running += total
+        tokens_series.append({
+            "id": ev["id"], "ts": ev["ts"],
+            "in": in_t, "out": out_t, "cached": cached_t,
+            "total": total, "cumulative": running,
+            "session_id": ev.get("session_id"),
+            "agent": ev.get("agent"),
+        })
+    tokens_total = running
+
     return {
         "agent_filter": agent_filter,
         "form": {
@@ -441,9 +551,15 @@ def model_timeline(ctx):
             "since": (ctx["qs"].get("since") or [""])[0],
             "from":  (ctx["qs"].get("from")  or [""])[0],
             "to":    (ctx["qs"].get("to")    or [""])[0],
+            "session_gap": str(session_gap_s),
         },
         "effective_from": from_dt.isoformat() if from_dt else None,
         "effective_to":   to_dt.isoformat()   if to_dt   else None,
+        "session_gap_s": session_gap_s,
+        "sessions": sessions,
+        "hour_buckets": hour_buckets,
+        "tokens_series": tokens_series,
+        "tokens_total": tokens_total,
         "exchanges": exchanges,
         "event_count": len(events),
         "events": events,
@@ -545,6 +661,108 @@ tr:hover td { background: #fafafa; }
 .seq-filter a.reset:hover { color: #555; text-decoration: underline; }
 .seq-active-range { margin: 0.2em 0 0.4em; }
 .seq-active-range code { font-size: 0.82em; }
+
+/* --- per-hour density histogram --- */
+.seq-histogram {
+  margin: 0.6em 0 1em;
+  padding: 0.6em 0.8em;
+  background: #fafbfc;
+  border: 1px solid #eef0f3;
+  border-radius: 5px;
+}
+.seq-hist-title { font-size: 0.78em; margin-bottom: 0.4em; }
+.seq-hist-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 40px;
+  gap: 0.5em; align-items: center;
+  text-decoration: none; color: inherit;
+  padding: 0.12em 0.3em; border-radius: 3px;
+}
+.seq-hist-row:hover { background: #eef3fa; }
+.seq-hist-label { font-family: ui-monospace, monospace; font-size: 0.74em; color: #666; }
+.seq-hist-bar {
+  display: inline-block; height: 0.85em;
+  background: linear-gradient(to right, #b8d4ed, #3a78c8);
+  border-radius: 2px; min-width: 2px;
+}
+.seq-hist-count { font-size: 0.78em; color: #555; text-align: right; }
+
+/* --- session group --- */
+.seq-session { margin: 0.6em 0 1em; border-top: 1px solid #e3e6ea; }
+.seq-session[open] > .seq-session-header { background: #eef3fa; }
+.seq-session-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 0 0.9em; align-items: baseline;
+  padding: 0.5em 0.7em;
+  background: #f4f6f9;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.86em;
+}
+.seq-session-header::-webkit-details-marker { display: none; }
+.seq-session-header::marker { content: ''; }
+.seq-session-id { font-weight: 600; color: #333; }
+.seq-session-range { color: #555; }
+.seq-session-range code { font-size: 0.78em; background: transparent; padding: 0; }
+.seq-session-meta { color: #666; font-size: 0.82em; white-space: nowrap; }
+.seq-session-link {
+  font-size: 0.8em; color: #06c; text-decoration: none;
+  padding: 0.15em 0.5em; border-radius: 3px;
+}
+.seq-session-link:hover { background: #d8e8f8; text-decoration: underline; }
+
+/* --- RTT bar inside an "in" arrow's summary --- */
+.seq-rtt-row {
+  display: flex; align-items: center; gap: 0.5em;
+  padding: 0.05em 0.4em;
+}
+.seq-rtt-bar {
+  display: inline-block; height: 0.45em;
+  background: linear-gradient(to right, #5cb85c, #f0ad4e, #d9534f);
+  border-radius: 1px;
+  min-width: 2px;
+}
+.seq-rtt-label { font-size: 0.75em; font-family: ui-monospace, monospace; }
+
+/* --- token usage chart --- */
+.seq-tokens {
+  margin: 0.8em 0 1em;
+  padding: 0.7em 0.9em;
+  background: #fafbfc;
+  border: 1px solid #eef0f3;
+  border-radius: 5px;
+}
+.seq-tokens-title {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 0.3em 0.6em;
+  font-size: 0.78em; margin: 0.3em 0 0.2em;
+}
+.seq-tokens-title:first-child { margin-top: 0; }
+.seq-tokens-legend {
+  display: inline-flex; align-items: center; gap: 0.3em 0.7em;
+  flex-wrap: wrap; font-size: 0.78em; color: #555;
+}
+.seq-tokens-legend .dot {
+  display: inline-block; width: 0.7em; height: 0.7em; border-radius: 2px;
+  vertical-align: -1px; margin-right: 0.1em;
+}
+.seq-tokens-legend .dot-in     { background: #5a9c4f; }
+.seq-tokens-legend .dot-cached { background: #b8b8c0; }
+.seq-tokens-legend .dot-out    { background: #3a78c8; }
+.seq-tokens-svg {
+  width: 100%; height: 90px;
+  background: #fff;
+  border: 1px solid #eef0f3;
+  border-radius: 3px;
+  display: block;
+}
+.seq-tokens-axis {
+  display: flex; justify-content: space-between;
+  font-family: ui-monospace, monospace; font-size: 0.72em;
+  margin-top: 0.3em;
+}
 
 .seq { margin: 1em 0; }
 
@@ -715,6 +933,118 @@ def render_json(obj, depth=0):
                     f"<pre>{esc(obj)}</pre></details>")
         return f"<code>{esc(json.dumps(obj))}</code>"
     return f"<code>{esc(json.dumps(obj))}</code>"
+
+
+def _render_tokens_chart(tokens_series):
+    """SVG chart of token usage over time: stacked per-call bars on top
+    (input - cached / cached / output) + cumulative running total below.
+    Both panels are time-positioned across the same x range so a tall bar
+    lines up with the matching step in the cumulative curve."""
+    if not tokens_series:
+        return ""
+    parsed = [(p, _parse_ts(p["ts"])) for p in tokens_series]
+    parsed = [(p, t) for p, t in parsed if t is not None]
+    if not parsed:
+        return ""
+
+    if len(parsed) == 1:
+        only = parsed[0][0]
+        return (
+            f"<div class='seq-tokens'>"
+            f"<div class='seq-tokens-title muted'>tokens</div>"
+            f"<p class='muted'>only one data point: "
+            f"{only['in']:,} in / {only['out']:,} out / "
+            f"{only['cached']:,} cached</p>"
+            f"</div>"
+        )
+
+    min_ts = min(t for _, t in parsed)
+    max_ts = max(t for _, t in parsed)
+    span = (max_ts - min_ts).total_seconds() or 1.0
+    max_call = max(p["total"] for p, _ in parsed) or 1
+    max_cum = parsed[-1][0]["cumulative"] or 1
+    cum_total = parsed[-1][0]["cumulative"]
+
+    W, H_BAR, H_CUM = 1000, 90, 90
+    bar_w = max(2, min(10, W / max(1, len(parsed))))
+
+    # Per-call stacked bars: in_only on top, cached in middle, output at bottom
+    # (visually clearer than billing-order; reads as "billed prompt / cached /
+    # generation" since they live in a single bar). Order chosen so cached
+    # sits between input and output, matching how a reader skims the cost.
+    bars = []
+    for p, t in parsed:
+        x = (t - min_ts).total_seconds() / span * (W - bar_w)
+        total = p["total"]
+        if total <= 0:
+            # Mark zero-token events with a tiny tick so retries are visible
+            bars.append(f"<line x1='{x:.1f}' y1='{H_BAR-1}' x2='{x + bar_w:.1f}' "
+                        f"y2='{H_BAR-1}' stroke='#c33' stroke-width='1.5' "
+                        f"opacity='0.5'/>")
+            continue
+        h_total = (total / max_call) * H_BAR
+        # Stack (top → bottom): in_only, cached, out
+        in_only = max(0, p["in"] - p["cached"])
+        cached = p["cached"]
+        out = p["out"]
+        denom = in_only + cached + out or 1
+        h_in     = (in_only / denom) * h_total
+        h_cached = (cached  / denom) * h_total
+        h_out    = (out     / denom) * h_total
+        y0 = H_BAR - h_total
+        bars.append(f"<rect x='{x:.1f}' y='{y0:.2f}' width='{bar_w:.1f}' "
+                    f"height='{h_in:.2f}' fill='#5a9c4f'/>")
+        bars.append(f"<rect x='{x:.1f}' y='{(y0 + h_in):.2f}' width='{bar_w:.1f}' "
+                    f"height='{h_cached:.2f}' fill='#b8b8c0'/>")
+        bars.append(f"<rect x='{x:.1f}' y='{(y0 + h_in + h_cached):.2f}' "
+                    f"width='{bar_w:.1f}' height='{h_out:.2f}' fill='#3a78c8'/>")
+
+    # Cumulative line as a step path (tokens jump at the moment they land)
+    pts = ["0," + f"{H_CUM}"]
+    last_y = H_CUM
+    for p, t in parsed:
+        x = (t - min_ts).total_seconds() / span * W
+        y = H_CUM - (p["cumulative"] / max_cum) * H_CUM
+        pts.append(f"{x:.1f},{last_y:.2f}")
+        pts.append(f"{x:.1f},{y:.2f}")
+        last_y = y
+    pts.append(f"{W},{last_y:.2f}")
+    poly = " ".join(pts)
+
+    start_lbl = min_ts.strftime("%Y-%m-%d %H:%M:%S")
+    end_lbl   = max_ts.strftime("%Y-%m-%d %H:%M:%S")
+
+    return (
+        "<div class='seq-tokens'>"
+        f"<div class='seq-tokens-title'>"
+        f"<span class='muted'>tokens per call</span> "
+        f"<span class='seq-tokens-legend'>"
+        f"<span class='dot dot-in'></span> input(billable) "
+        f"<span class='dot dot-cached'></span> cached "
+        f"<span class='dot dot-out'></span> output "
+        f"<span class='muted'>· max {max_call:,}</span>"
+        f"</span>"
+        f"</div>"
+        f"<svg viewBox='0 0 {W} {H_BAR + 2}' preserveAspectRatio='none' "
+        f"class='seq-tokens-svg'>"
+        f"{''.join(bars)}"
+        f"</svg>"
+        f"<div class='seq-tokens-title'>"
+        f"<span class='muted'>cumulative</span> "
+        f"<span class='muted'>· total {cum_total:,} tokens</span>"
+        f"</div>"
+        f"<svg viewBox='0 0 {W} {H_CUM + 2}' preserveAspectRatio='none' "
+        f"class='seq-tokens-svg'>"
+        f"<polygon points='{poly}' fill='#3a78c8' fill-opacity='0.12' "
+        f"stroke='none'/>"
+        f"<polyline points='{poly}' fill='none' stroke='#3a78c8' "
+        f"stroke-width='2'/>"
+        f"</svg>"
+        f"<div class='seq-tokens-axis muted'>"
+        f"<span>{esc(start_lbl)}</span><span>{esc(end_lbl)}</span>"
+        f"</div>"
+        f"</div>"
+    )
 
 
 def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
@@ -962,9 +1292,9 @@ def render_timeline(m, ctx=None):
     # Reconstruct the JSON URL with the same query params so the link in the
     # nav matches what is currently filtered.
     qs_bits = []
-    for k in ("agent", "since", "from", "to"):
+    for k in ("agent", "since", "from", "to", "session_gap"):
         v = form.get(k)
-        if v:
+        if v and (k != "session_gap" or v != "30"):
             qs_bits.append(f"{k}={esc(v)}")
     json_url = "/api/timeline" + ("?" + "&".join(qs_bits) if qs_bits else "")
 
@@ -997,13 +1327,48 @@ def render_timeline(m, ctx=None):
         f"value='{esc(form['from'])}'></label>"
         f"<label>to (UTC)<input type='datetime-local' name='to' "
         f"value='{esc(form['to'])}'></label>"
+        f"<label>session gap (s)<input type='number' name='session_gap' "
+        f"min='0' step='1' value='{esc(form['session_gap'])}' "
+        f"style='width: 5em'></label>"
         f"<button type='submit'>Apply</button>"
         f"<a class='reset' href='/timeline'>reset</a>"
         f"</form>",
         active,
         f"<p class='muted'>{m['exchanges']} exchange(s) · "
-        f"{m['event_count']} arrows · oldest first</p>",
+        f"{m['event_count']} arrows · {len(m['sessions'])} session(s) · "
+        f"gap threshold {m['session_gap_s']}s</p>",
     ]
+
+    # --- Per-hour density histogram (clickable to filter that hour) ---------
+    if m["hour_buckets"]:
+        max_count = max(b["count"] for b in m["hour_buckets"])
+        body.append("<div class='seq-histogram'>"
+                    "<div class='seq-hist-title muted'>exchanges per hour "
+                    "(click a bar to filter)</div>")
+        agent_q = (f"&agent={esc(form['agent'])}" if form["agent"] else "")
+        for b in m["hour_buckets"]:
+            try:
+                hour_dt = datetime.fromisoformat(b["hour"])
+            except ValueError:
+                continue
+            pct = (b["count"] / max_count) * 100 if max_count else 0
+            from_str = hour_dt.strftime("%Y-%m-%dT%H:%M")
+            to_str = (hour_dt + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+            href = f"/timeline?from={from_str}&to={to_str}{agent_q}"
+            label = hour_dt.strftime("%m-%d %H:00")
+            body.append(
+                f"<a class='seq-hist-row' href='{esc(href)}' "
+                f"title='{esc(b['hour'])} UTC'>"
+                f"<span class='seq-hist-label'>{esc(label)}</span>"
+                f"<span class='seq-hist-bar' style='width: {pct:.1f}%'></span>"
+                f"<span class='seq-hist-count'>{b['count']}</span>"
+                f"</a>"
+            )
+        body.append("</div>")
+
+    # --- Token usage chart (per-call stacked bars + cumulative line) --------
+    body.append(_render_tokens_chart(m["tokens_series"]))
+
     if not m["events"]:
         body.append("<p class='muted'>(no exchanges matched — capture some "
                     "traffic, or relax the filter)</p>")
@@ -1016,8 +1381,10 @@ def render_timeline(m, ctx=None):
         "<div class='seq-lane-spacer'></div>"
         "<div class='seq-lane-r'>API</div>"
         "</div>"
-        "<ol class='seq-events'>"
     )
+    # Build a session_id → summary index for quick lookup while iterating events
+    sessions_by_id = {s["id"]: s for s in m["sessions"]}
+    current_session = -1
 
     by_id = {r.get("id"): r for r in (ctx or {}).get("requests", [])}
     responses = (ctx or {}).get("responses", {})
@@ -1029,6 +1396,50 @@ def render_timeline(m, ctx=None):
         ts = ev.get("ts") or ""
         raw = by_id.get(ev["id"])
         resp = responses.get(ev["id"])
+
+        # Open / close session group as we cross boundaries
+        if ev.get("session_id") != current_session:
+            if current_session >= 0:
+                body.append("</ol></details>")
+            current_session = ev["session_id"]
+            s = sessions_by_id.get(current_session)
+            if s:
+                # Compute duration label
+                start_dt = _parse_ts(s["start_ts"])
+                end_dt = _parse_ts(s["end_ts"])
+                if start_dt and end_dt and end_dt >= start_dt:
+                    dur = _fmt_gap((end_dt - start_dt).total_seconds()).lstrip("+")
+                else:
+                    dur = "—"
+                # Per-session filter link (snaps to second precision; +1s on
+                # the end so the boundary event stays inside).
+                s_from = (start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                          if start_dt else (s["start_ts"] or "")[:19])
+                s_to = ((end_dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S")
+                        if end_dt else (s["end_ts"] or "")[:19])
+                agent_q = f"&agent={esc(form['agent'])}" if form["agent"] else ""
+                filter_href = f"/timeline?from={s_from}&to={s_to}{agent_q}"
+                agents_lbl = ", ".join(s["agents"]) if s["agents"] else "?"
+                body.append(
+                    f"<details class='seq-session' open>"
+                    f"<summary class='seq-session-header'>"
+                    f"<span class='seq-session-id'>Session #{s['id'] + 1}</span>"
+                    f"<span class='seq-session-range'>"
+                    f"<code>{esc(s['start_ts'])}</code> → "
+                    f"<code>{esc(s['end_ts'])}</code> "
+                    f"<span class='muted'>({esc(dur)})</span>"
+                    f"</span>"
+                    f"<span class='seq-session-meta'>"
+                    f"{s['exchange_count']} exchange(s) · "
+                    f"agents: {esc(agents_lbl)} · "
+                    f"{s['tokens_in']:,} in / {s['tokens_out']:,} out / "
+                    f"{s['tokens_cached']:,} cached"
+                    f"</span>"
+                    f"<a class='seq-session-link' href='{esc(filter_href)}'>"
+                    f"filter to this session →</a>"
+                    f"</summary>"
+                    f"<ol class='seq-events'>"
+                )
 
         if direction == "out":
             # Outbound: agent → API
@@ -1076,6 +1487,19 @@ def render_timeline(m, ctx=None):
         in_target = (f"<span class='tag {esc(agent)}'>{esc(agent)}</span>"
                      if direction == "in" else "")
 
+        # Optional RTT bar for "in" arrows (gap_s is the response time relative
+        # to the matching "out").
+        rtt_row = ""
+        if direction == "in" and ev.get("gap_s") is not None and ev["gap_s"] >= 0:
+            pct = _rtt_width_pct(ev["gap_s"])
+            rtt_row = (
+                f"<div class='seq-rtt-row'>"
+                f"<span class='seq-rtt-bar' style='width: {pct:.1f}%'></span>"
+                f"<span class='seq-rtt-label muted'>RTT "
+                f"{esc(_fmt_gap(ev['gap_s']).lstrip('+'))}</span>"
+                f"</div>"
+            )
+
         body.append(
             f"<li class='seq-event' data-dir='{esc(direction)}' "
             f"data-agent='{esc(agent)}' id='ex-{esc(ev['id'])}-{esc(direction)}'>"
@@ -1092,6 +1516,7 @@ def render_timeline(m, ctx=None):
             f"<span class='seq-label'>{label}</span>"
             f"<span class='seq-meta'>{meta}</span>"
             f"</span>"
+            f"{rtt_row}"
             f"</summary>"
             f"<div class='seq-msg-body'>"
             f"<p class='muted'><a href='/requests/{esc(ev['id'])}'>open full page →</a></p>"
@@ -1101,7 +1526,10 @@ def render_timeline(m, ctx=None):
             f"<span class='seq-lane-r-cell'>{api_chip}{in_target}</span>"
             f"</li>"
         )
-    body.append("</ol></div>")
+    # Close the last open session group
+    if current_session >= 0:
+        body.append("</ol></details>")
+    body.append("</div>")
     return page("Timeline", "".join(body), json_url=json_url)
 
 

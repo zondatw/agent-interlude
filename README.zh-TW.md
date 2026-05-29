@@ -169,6 +169,7 @@ uv run report.py serve --logs "other/path/log-*.jsonl"
 | 路徑 | 內容 |
 |---|---|
 | `/` | 跨 agent 比較表 + 每個 agent 關鍵數字 |
+| `/timeline[?agent=…&since=…&from=…&to=…&session_gap=…]` | Sequence-diagram 風格:agent ↔ API 兩條 lane,每個 exchange 拆 req/resp 兩支箭頭,自動依 gap 分 session(可調),頂端有每小時 histogram,每支 resp 箭頭附 RTT bar。點任一箭頭只展開那一半(req 看 system/tools/messages、resp 看 reassembled/usage/event_types)。 |
 | `/requests[?agent=…]` | 全部 exchange 列表，可依 agent 過濾，含 model / token 欄位 |
 | `/requests/<id>` | 單筆完整：system / tools / messages 摺疊 + 配對好的重組回應 |
 | `/skeleton/<agent>` | canonical sample，**固定行灰、動態插槽行黃底**；底下列所有動態行 |

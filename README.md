@@ -183,6 +183,7 @@ Routes:
 | Path | What it shows |
 |---|---|
 | `/` | Cross-agent overview + per-agent stats |
+| `/timeline[?agent=…&since=…&from=…&to=…&session_gap=…]` | Sequence-diagram view of every exchange: agent ↔ API lanes, two arrows per exchange (request + response), auto-grouped into sessions (gap-threshold configurable), per-hour density histogram on top, RTT bars on every response arrow. Click an arrow to expand only that half (request → system/tools/messages; response → reassembled text/usage/event_types). |
 | `/requests[?agent=…]` | Sortable list of exchanges with model / token columns |
 | `/requests/<id>` | Collapsible system / tools / messages + paired reassembled response |
 | `/skeleton/<agent>` | Canonical system sample with fixed lines greyed and dynamic slots highlighted in yellow |
