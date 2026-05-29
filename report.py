@@ -442,89 +442,98 @@ tr:hover td { background: #fafafa; }
 .seq-controls a { color: #06c; text-decoration: none; }
 .seq-controls a:hover { text-decoration: underline; }
 
-.seq { position: relative; margin: 1em 0; }
-.seq-lanes { display: grid;
-             grid-template-columns: 130px 110px 1fr 110px;
-             gap: 0.5em; align-items: center; padding: 0.4em 0;
-             margin-bottom: 0.3em; }
-.seq-lane-l, .seq-lane-r {
-  padding: 0.5em 0.9em; background: #f0f1f4; border-radius: 4px;
-  text-align: center; font-weight: 600; font-size: 0.9em; color: #444;
-}
-.seq-lane-l { grid-column: 3 / 3; justify-self: start; }
-.seq-lane-r { grid-column: 4 / 5; justify-self: stretch; }
+.seq { margin: 1em 0; }
 
-.seq-events { list-style: none; padding: 0; margin: 0; position: relative; }
-/* Two vertical lifelines drawn behind the events */
-.seq-events::before, .seq-events::after {
-  content: ''; position: absolute; top: 0; bottom: 0;
-  width: 2px; background: #e3e6ea;
-}
-/* Lifelines at the column-3 / column-4 boundaries (matches seq-lanes grid) */
-.seq-events::before { left: calc(130px + 110px + 0.5em + 30px); }
-.seq-events::after  { right: calc(110px - 30px); }
-
-.seq-event { display: grid;
-             grid-template-columns: 130px 110px 1fr 110px;
-             gap: 0.5em; align-items: start;
-             padding: 0.35em 0; position: relative; }
-
-.seq-time { font-family: ui-monospace, monospace; font-size: 0.76em;
-            color: #666; padding-top: 0.55em; text-align: right; }
-.seq-gap { font-size: 0.76em; color: #999; padding-top: 0.55em;
-           text-align: right; }
-.seq-lane-l-cell { padding-top: 0.45em; text-align: right;
-                   padding-right: 0.6em; }
-.seq-lane-r-cell { padding-top: 0.45em; padding-left: 0.6em; }
-.seq-api-label { font-size: 0.82em; }
-
-.seq-msg { /* the <details> element holding summary + body */ }
-.seq-msg > summary {
+/* The lanes header and every event row share the same 5-column template so
+   the agent / API "lanes" align vertically across rows like lifelines. */
+.seq-lanes, .seq-event {
   display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: 1.6em auto;
-  align-items: center;
+  grid-template-columns: 110px 55px 95px 1fr 110px;
   gap: 0 0.5em;
+  align-items: start;
+}
+
+/* Top lane labels */
+.seq-lanes { padding: 0.4em 0 0.7em; margin-bottom: 0.4em;
+             border-bottom: 1px solid #eee; }
+.seq-lane-l, .seq-lane-r {
+  padding: 0.45em 0.8em; background: #f0f1f4; border-radius: 4px;
+  text-align: center; font-weight: 600; font-size: 0.88em; color: #444;
+}
+.seq-lane-l { grid-column: 3; justify-self: stretch; }
+.seq-lane-r { grid-column: 5; justify-self: stretch; }
+.seq-lane-spacer { grid-column: 4; }
+
+/* Events list */
+.seq-events { list-style: none; padding: 0; margin: 0; }
+
+.seq-event { padding: 0.35em 0; border-bottom: 1px dashed transparent; }
+.seq-event:hover { background: rgba(6, 100, 204, 0.02); }
+
+.seq-time {
+  grid-column: 1;
+  font-family: ui-monospace, monospace; font-size: 0.74em; color: #666;
+  text-align: right; padding-top: 0.45em; word-break: break-all;
+}
+.seq-gap {
+  grid-column: 2;
+  font-size: 0.74em; color: #999;
+  text-align: right; padding-top: 0.45em;
+}
+.seq-lane-l-cell {
+  grid-column: 3;
+  padding-top: 0.35em; text-align: right; padding-right: 0.3em;
+  white-space: nowrap;
+}
+.seq-msg {
+  grid-column: 4;
+  min-width: 0;  /* let inner flex children shrink instead of overflowing */
+}
+.seq-lane-r-cell {
+  grid-column: 5;
+  padding-top: 0.45em; text-align: left; padding-left: 0.3em;
+  white-space: nowrap;
+}
+.seq-api-label { font-size: 0.8em; color: #666; }
+
+/* Clickable summary: arrow line on top, label + meta below */
+.seq-msg > summary {
   cursor: pointer;
-  padding: 0 0.3em;
+  padding: 0.25em 0.4em;
   list-style: none;
+  border-radius: 3px;
+  display: flex; flex-direction: column; gap: 0.2em;
 }
 .seq-msg > summary::-webkit-details-marker { display: none; }
 .seq-msg > summary::marker { content: ''; }
-.seq-msg > summary:hover .seq-label { text-decoration: underline; }
+.seq-msg > summary:hover { background: #f7f8fa; }
 
 .seq-arrow-track {
-  grid-column: 1 / 3;
-  grid-row: 1;
   display: flex; align-items: center;
-  height: 1.6em; pointer-events: none;
+  height: 0.95em; min-width: 0;
 }
 .seq-arrow-line { flex: 1; height: 2px; background: #888; border-radius: 1px; }
-.seq-arrow-head {
-  font-size: 0.95em; color: #888; line-height: 1;
-  padding: 0 0.15em;
-}
+.seq-arrow-head { font-size: 0.85em; line-height: 1;
+                  padding: 0 0.15em; color: #888; }
+
 .seq-event[data-dir="out"] .seq-arrow-head { order: 2; }
-.seq-event[data-dir="in"]  .seq-arrow-head { order: 0; }
-.seq-event[data-agent="claude"] .seq-arrow-line,
-.seq-event[data-agent="claude"] .seq-arrow-head { background: #c8743a; }
-.seq-event[data-agent="claude"] .seq-arrow-head { background: transparent; color: #c8743a; }
+.seq-event[data-dir="in"]  .seq-arrow-head { order: -1; }
+
+.seq-event[data-agent="claude"] .seq-arrow-line { background: #c8743a; }
+.seq-event[data-agent="claude"] .seq-arrow-head { color: #c8743a; }
 .seq-event[data-agent="codex"] .seq-arrow-line { background: #3a78c8; }
 .seq-event[data-agent="codex"] .seq-arrow-head { color: #3a78c8; }
 
+.seq-label-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 0.6em; font-size: 0.86em; min-width: 0;
+}
 .seq-label {
-  grid-column: 1 / 3; grid-row: 2;
-  background: #fff; padding: 0.05em 0.5em;
-  font-size: 0.86em; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-  z-index: 1;
+  font-weight: 500; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .seq-meta {
-  grid-column: 1 / 3; grid-row: 2;
-  text-align: right;
-  font-size: 0.78em; padding: 0.05em 0.5em;
-  background: #fff;
-  align-self: end;
+  font-size: 0.78em; color: #777; white-space: nowrap; flex-shrink: 0;
 }
 
 .seq-msg-body {
@@ -939,8 +948,10 @@ def render_timeline(m, ctx=None):
             f"<span class='seq-arrow-line'></span>"
             f"<span class='seq-arrow-head'>{('▶' if direction == 'out' else '◀')}</span>"
             f"</span>"
+            f"<span class='seq-label-row'>"
             f"<span class='seq-label'>{label}</span>"
             f"<span class='seq-meta'>{meta}</span>"
+            f"</span>"
             f"</summary>"
             f"<div class='seq-msg-body'>"
             f"<p class='muted'><a href='/requests/{esc(ev['id'])}'>open full page →</a></p>"
