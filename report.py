@@ -803,6 +803,83 @@ def model_timeline(ctx):
     for s in sessions:
         s["agents"] = sorted(s.pop("_agents_set"))
 
+    # --- Thread auto-grouping (continuation of messages array) -------------
+    # A thread groups consecutive exchanges where the next request's messages
+    # array starts with the previous request's messages array (same agent,
+    # same wire). This typically captures one continued conversation: user
+    # prompts → model replies with tool_use → user supplies tool_result →
+    # model continues. Singletons (no continuation) still get a thread id but
+    # the renderer omits the wrapper to keep the UI clean.
+    #
+    # by_id is built fresh here because event_id-only lookups need raw records
+    # (events do not carry the full messages array on their own).
+    req_by_id = {r.get("id"): r for r in ctx["requests"]}
+    threads = []
+    current_thread_id = -1
+    last_thread_norm = None
+    last_thread_agent = None
+    last_thread_wire = None
+    for ev in events:
+        if ev["dir"] != "out":
+            continue
+        raw = req_by_id.get(ev["id"])
+        if raw is None:
+            ev["thread_id"] = current_thread_id if current_thread_id >= 0 else 0
+            continue
+        msgs = (raw.get("extract") or {}).get("messages")
+        msgs_list = msgs if isinstance(msgs, list) else []
+        agent_now = raw.get("agent")
+        wire_now = raw.get("wire")
+
+        is_continuation = False
+        if (
+            current_thread_id >= 0
+            and agent_now == last_thread_agent
+            and wire_now == last_thread_wire
+            and len(msgs_list) > len(last_thread_norm or [])
+        ):
+            is_continuation = True
+            for i, prev_repr in enumerate(last_thread_norm):
+                cur_repr = json.dumps(msgs_list[i], sort_keys=True, ensure_ascii=False)
+                if cur_repr != prev_repr:
+                    is_continuation = False
+                    break
+
+        if is_continuation:
+            t = threads[-1]
+            t["exchange_count"] += 1
+            t["end_ts"] = raw.get("ts") or t["end_ts"]
+            t["new_turns"] += len(msgs_list) - len(last_thread_norm)
+            t["last_msgs_count"] = len(msgs_list)
+            t["session_ids"].add(ev.get("session_id"))
+        else:
+            current_thread_id += 1
+            threads.append(
+                {
+                    "id": current_thread_id,
+                    "agent": agent_now,
+                    "wire": wire_now,
+                    "start_ts": raw.get("ts"),
+                    "end_ts": raw.get("ts"),
+                    "exchange_count": 1,
+                    "new_turns": len(msgs_list),
+                    "last_msgs_count": len(msgs_list),
+                    "session_ids": {ev.get("session_id")},
+                }
+            )
+        last_thread_norm = [json.dumps(m, sort_keys=True, ensure_ascii=False) for m in msgs_list]
+        last_thread_agent = agent_now
+        last_thread_wire = wire_now
+        ev["thread_id"] = current_thread_id
+    # propagate thread_id to the paired in events
+    out_thread = {ev["id"]: ev.get("thread_id") for ev in events if ev["dir"] == "out"}
+    for ev in events:
+        if ev["dir"] == "in":
+            ev["thread_id"] = out_thread.get(ev["id"], -1)
+    # finalize sessions list per thread
+    for t in threads:
+        t["session_ids"] = sorted(sid for sid in t["session_ids"] if sid is not None)
+
     # --- Hour density histogram ---------------------------------------------
     # Count exchanges (out events) per UTC hour. Used to render a quick visual
     # at the top of the page that doubles as a one-click filter.
@@ -868,6 +945,7 @@ def model_timeline(ctx):
         "effective_to": to_dt.isoformat() if to_dt else None,
         "session_gap_s": session_gap_s,
         "sessions": sessions,
+        "threads": threads,
         "hour_buckets": hour_buckets,
         "tokens_series": tokens_series,
         "tokens_total": tokens_total,
@@ -1068,6 +1146,33 @@ tr:hover td { background: #fafafa; }
   padding: 0.15em 0.5em; border-radius: 3px;
 }
 .seq-session-link:hover { background: #d8e8f8; text-decoration: underline; }
+
+/* --- thread group (nested inside a session) --- */
+.seq-thread { margin: 0.4em 0 0.8em; padding-left: 0.4em;
+              border-left: 3px solid #d4e4f5; }
+.seq-thread[open] > .seq-thread-header { color: #2c5aa0; }
+.seq-thread-header {
+  display: flex; flex-wrap: wrap; gap: 0.4em 0.9em; align-items: baseline;
+  padding: 0.4em 0.7em;
+  background: #f0f6fd;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.84em;
+  margin-bottom: 0.3em;
+}
+.seq-thread-header::-webkit-details-marker { display: none; }
+.seq-thread-header::marker { content: ''; }
+.seq-thread-id { font-weight: 600; color: #1f3d6e; }
+.seq-thread-meta { color: #444; }
+.seq-thread-range { font-size: 0.82em; }
+.seq-thread-range code { font-size: 0.78em; background: transparent; padding: 0; }
+.seq-thread-singleton { /* same as default seq-events; no header */ }
+.seq-thread-link {
+  font-size: 0.78em; color: #06c; text-decoration: none;
+  padding: 0.15em 0.5em; border-radius: 3px; margin-left: auto;
+}
+.seq-thread-link:hover { background: #d8e8f8; text-decoration: underline; }
 
 /* --- RTT bar inside an "in" arrow's summary --- */
 .seq-rtt-row {
@@ -2045,12 +2150,68 @@ def render_timeline(m, ctx=None):
         "<div class='seq-lane-r'>API</div>"
         "</div>"
     )
-    # Build a session_id → summary index for quick lookup while iterating events
+    # Build session_id and thread_id indexes for quick lookup while iterating
     sessions_by_id = {s["id"]: s for s in m["sessions"]}
+    threads_by_id = {t["id"]: t for t in m.get("threads", [])}
     current_session = -1
+    current_thread = -1
 
     by_id = {r.get("id"): r for r in (ctx or {}).get("requests", [])}
     responses = (ctx or {}).get("responses", {})
+
+    def _close_thread_if_open():
+        nonlocal current_thread
+        if current_thread < 0:
+            return
+        t = threads_by_id.get(current_thread)
+        if t and t.get("exchange_count", 1) > 1:
+            body.append("</ol></details>")
+        else:
+            body.append("</ol>")
+        current_thread = -1
+
+    def _open_thread(tid):
+        nonlocal current_thread
+        current_thread = tid
+        t = threads_by_id.get(tid)
+        if not t:
+            body.append("<ol class='seq-events'>")
+            return
+        if t["exchange_count"] > 1:
+            # Multi-round thread: render a header and a collapsible wrapper.
+            # tokens_series uses short keys (in/out/cached), not tokens_in/etc.
+            tk_in = sum(
+                p.get("in", 0)
+                for p in m["tokens_series"]
+                if p.get("session_id") in t["session_ids"] and p.get("agent") == t["agent"]
+            )
+            agent_q = f"&agent={esc(form['agent'])}" if form["agent"] else ""
+            thread_filter = (
+                f"/timeline?from={esc((t['start_ts'] or '')[:19])}"
+                f"&to={esc((t['end_ts'] or '')[:19])}{agent_q}"
+            )
+            body.append(
+                f"<details class='seq-thread' open>"
+                f"<summary class='seq-thread-header'>"
+                f"<span class='seq-thread-id'>Thread #{t['id'] + 1}</span>"
+                f"<span class='seq-thread-meta'>"
+                f"{t['exchange_count']} round(s) · "
+                f"{t['new_turns']} turn(s) total · "
+                f"{tk_in:,} tokens in · "
+                f"agent: <span class='tag {esc(t['agent'] or '?')}'>"
+                f"{esc(t['agent'] or '?')}</span>"
+                f"</span>"
+                f"<span class='seq-thread-range muted'>"
+                f"<code>{esc(t['start_ts'])}</code> → "
+                f"<code>{esc(t['end_ts'])}</code>"
+                f"</span>"
+                f"<a class='seq-thread-link' href='{esc(thread_filter)}'>"
+                f"filter to this thread →</a>"
+                f"</summary>"
+                f"<ol class='seq-events'>"
+            )
+        else:
+            body.append("<ol class='seq-events seq-thread-singleton'>")
 
     for ev in m["events"]:
         agent = ev.get("agent") or "?"
@@ -2060,10 +2221,12 @@ def render_timeline(m, ctx=None):
         raw = by_id.get(ev["id"])
         resp = responses.get(ev["id"])
 
-        # Open / close session group as we cross boundaries
+        # Open / close session group as we cross boundaries. Thread wrappers
+        # are nested INSIDE sessions.
         if ev.get("session_id") != current_session:
+            _close_thread_if_open()
             if current_session >= 0:
-                body.append("</ol></details>")
+                body.append("</details>")
             current_session = ev["session_id"]
             s = sessions_by_id.get(current_session)
             if s:
@@ -2107,8 +2270,12 @@ def render_timeline(m, ctx=None):
                     f"<a class='seq-session-link' href='{esc(filter_href)}'>"
                     f"filter to this session →</a>"
                     f"</summary>"
-                    f"<ol class='seq-events'>"
                 )
+
+        # Open / close thread group within this session
+        if ev.get("thread_id") != current_thread:
+            _close_thread_if_open()
+            _open_thread(ev.get("thread_id", -1))
 
         if direction == "out":
             # Outbound: agent → API
@@ -2253,9 +2420,10 @@ def render_timeline(m, ctx=None):
             f"<span class='seq-lane-r-cell'>{api_chip}{in_target}</span>"
             f"</li>"
         )
-    # Close the last open session group
+    # Close the last open thread + session group
+    _close_thread_if_open()
     if current_session >= 0:
-        body.append("</ol></details>")
+        body.append("</details>")
     body.append("</div>")
     return page("Timeline", "".join(body), json_url=json_url)
 
