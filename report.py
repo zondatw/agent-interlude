@@ -28,14 +28,12 @@ import math
 import os
 import re
 import statistics
-import sys
 import threading
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from analyze import skeleton, system_text, tool_names, tool_schema_key
-
 
 # =============================================================================
 # DATA — log loading, grouping, per-agent aggregation
@@ -123,14 +121,14 @@ def agent_facts(requests):
         out[agent] = {
             "reqs": len(recs),
             "distinct": sk["distinct"] if sk else 0,
-            "sys_median": (int(statistics.median(len(t) for t in samples))
-                           if samples else 0),
+            "sys_median": (int(statistics.median(len(t) for t in samples)) if samples else 0),
             "fixed": sk["fixed"] if sk else 0,
             "unique_lines": sk["unique_lines"] if sk else 0,
             "dynamic_count": len(sk["dynamic_lines"]) if sk else 0,
             "tool_count": len(union),
-            "tool_key": next((tool_schema_key(r) for r in recs
-                              if tool_schema_key(r) != "n/a"), "n/a"),
+            "tool_key": next(
+                (tool_schema_key(r) for r in recs if tool_schema_key(r) != "n/a"), "n/a"
+            ),
         }
     return out
 
@@ -169,7 +167,7 @@ def _parse_filter_ts(s):
         # datetime-local input gives 16 chars without seconds; pad them.
         if len(norm) == 16:
             norm += ":00"
-        return datetime.fromisoformat(norm).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(norm).replace(tzinfo=UTC)
     except (ValueError, AttributeError):
         return None
 
@@ -222,8 +220,8 @@ def _compute_time_range(qs, requests):
     request ts in the data set (so 'last hour' still makes sense for old
     captures). Anything missing leaves that bound open."""
     from_dt = _parse_filter_ts((qs.get("from") or [None])[0])
-    to_dt   = _parse_filter_ts((qs.get("to")   or [None])[0])
-    since   = (qs.get("since") or [None])[0]
+    to_dt = _parse_filter_ts((qs.get("to") or [None])[0])
+    since = (qs.get("since") or [None])[0]
     delta = _parse_duration(since) if since else None
     if delta and not from_dt:
         latest = None
@@ -278,7 +276,7 @@ def _flatten_messages_text(msgs):
                     if isinstance(v, str):
                         parts.append(v)
                 inp = cb.get("input")
-                if isinstance(inp, (dict, list)):
+                if isinstance(inp, dict | list):
                     parts.append(json.dumps(inp, ensure_ascii=False))
                 elif isinstance(inp, str):
                     parts.append(inp)
@@ -306,8 +304,8 @@ def _make_snippet(text, query, context=40):
     end = min(len(norm), idx + len(query) + context)
     return {
         "before": ("…" if start > 0 else "") + norm[start:idx],
-        "match":  norm[idx:idx + len(query)],
-        "after":  norm[idx + len(query):end] + ("…" if end < len(norm) else ""),
+        "match": norm[idx : idx + len(query)],
+        "after": norm[idx + len(query) : end] + ("…" if end < len(norm) else ""),
     }
 
 
@@ -337,30 +335,32 @@ def _diff_tools(tools_a, tools_b):
     """Compare two tool lists by name. Returns {added, removed, changed,
     a_total, b_total}. 'changed' means same name, different serialized JSON
     (schema or description differs)."""
+
     def by_name(tools):
         if not isinstance(tools, list):
             return {}
         d = {}
         for t in tools:
             if isinstance(t, dict):
-                n = (t.get("name")
-                     or (t.get("function") or {}).get("name")
-                     or t.get("type"))
+                n = t.get("name") or (t.get("function") or {}).get("name") or t.get("type")
                 if n:
                     d[n] = t
         return d
+
     a_map = by_name(tools_a)
     b_map = by_name(tools_b)
     added = sorted(set(b_map) - set(a_map))
     removed = sorted(set(a_map) - set(b_map))
     changed = []
     for n in sorted(set(a_map) & set(b_map)):
-        if (json.dumps(a_map[n], sort_keys=True)
-                != json.dumps(b_map[n], sort_keys=True)):
+        if json.dumps(a_map[n], sort_keys=True) != json.dumps(b_map[n], sort_keys=True):
             changed.append(n)
     return {
-        "added": added, "removed": removed, "changed": changed,
-        "a_total": len(a_map), "b_total": len(b_map),
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "a_total": len(a_map),
+        "b_total": len(b_map),
     }
 
 
@@ -374,8 +374,9 @@ def _diff_messages(msgs_a, msgs_b):
         msgs_b = []
     prefix = 0
     for i in range(min(len(msgs_a), len(msgs_b))):
-        if (json.dumps(msgs_a[i], sort_keys=True, ensure_ascii=False)
-                == json.dumps(msgs_b[i], sort_keys=True, ensure_ascii=False)):
+        if json.dumps(msgs_a[i], sort_keys=True, ensure_ascii=False) == json.dumps(
+            msgs_b[i], sort_keys=True, ensure_ascii=False
+        ):
             prefix += 1
         else:
             break
@@ -402,10 +403,8 @@ def _extract_invoked_tools(resp):
     out = []
     for t in tu:
         if isinstance(t, dict):
-            out.append({"name": t.get("name"),
-                        "input": t.get("input")})
+            out.append({"name": t.get("name"), "input": t.get("input")})
     return out
-
 
 
 def _build_request_detail(r):
@@ -454,19 +453,21 @@ def model_requests(ctx):
         resp = ctx["responses"].get(xid, {})
         rc = resp.get("reconstructed") or {}
         i_tok, o_tok, cached = _usage_cells(rc.get("usage"))
-        rows.append({
-            "id": xid,
-            "ts": r.get("ts"),
-            "agent": r.get("agent"),
-            "wire": r.get("wire"),
-            "method": r.get("method"),
-            "path": r.get("path"),
-            "status": resp.get("status"),
-            "model": rc.get("model") or (r.get("request") or {}).get("model"),
-            "tokens_in": i_tok,
-            "tokens_out": o_tok,
-            "tokens_cached": cached,
-        })
+        rows.append(
+            {
+                "id": xid,
+                "ts": r.get("ts"),
+                "agent": r.get("agent"),
+                "wire": r.get("wire"),
+                "method": r.get("method"),
+                "path": r.get("path"),
+                "status": resp.get("status"),
+                "model": rc.get("model") or (r.get("request") or {}).get("model"),
+                "tokens_in": i_tok,
+                "tokens_out": o_tok,
+                "tokens_cached": cached,
+            }
+        )
     return {"agent_filter": agent_filter, "rows": rows}
 
 
@@ -484,8 +485,7 @@ def model_request(ctx):
 
 def model_skeleton(ctx):
     agent = ctx["params"]["agent"]
-    recs = [r for r in ctx["requests"]
-            if r.get("agent") == agent and r.get("extract") is not None]
+    recs = [r for r in ctx["requests"] if r.get("agent") == agent and r.get("extract") is not None]
     samples = []
     for r in recs:
         t, _ = system_text(r)
@@ -493,8 +493,14 @@ def model_skeleton(ctx):
             samples.append(t)
     distinct = list(dict.fromkeys(samples))
     if not distinct:
-        return {"agent": agent, "distinct": 0, "fixed": 0, "unique_lines": 0,
-                "dynamic_lines": [], "canonical": None}
+        return {
+            "agent": agent,
+            "distinct": 0,
+            "fixed": 0,
+            "unique_lines": 0,
+            "dynamic_lines": [],
+            "canonical": None,
+        }
     sk = skeleton(distinct)
     return {
         "agent": agent,
@@ -508,8 +514,7 @@ def model_skeleton(ctx):
 
 def model_tools(ctx):
     agent = ctx["params"]["agent"]
-    recs = [r for r in ctx["requests"]
-            if r.get("agent") == agent and r.get("extract") is not None]
+    recs = [r for r in ctx["requests"] if r.get("agent") == agent and r.get("extract") is not None]
     tools, chosen_ts = None, None
     for r in sorted(recs, key=lambda x: x.get("ts", ""), reverse=True):
         ex = r.get("extract") or {}
@@ -535,7 +540,8 @@ def model_tools(ctx):
             invocation_counts[n] += 1
 
     return {
-        "agent": agent, "ts": chosen_ts,
+        "agent": agent,
+        "ts": chosen_ts,
         "tools": tools or [],
         "invocation_counts": dict(invocation_counts),
         "exchanges_with_invocations": exchanges_with_invocations,
@@ -547,7 +553,7 @@ def _upstream_label(wire, path):
     """Derive the upstream-host label for the API lane based on wire format
     and path. The proxy listener mapping is static (see proxy.py LISTENERS),
     so we can reverse-engineer it from what we logged."""
-    p = (path or "")
+    p = path or ""
     if wire == "claude-messages":
         return "Anthropic"
     if wire == "codex-responses":
@@ -577,8 +583,13 @@ def model_diff(ctx):
     req_a = by_id.get(a_id)
     req_b = by_id.get(b_id)
     if not req_a or not req_b:
-        return {"state": "not_found", "a_id": a_id, "b_id": b_id,
-                "a_found": req_a is not None, "b_found": req_b is not None}
+        return {
+            "state": "not_found",
+            "a_id": a_id,
+            "b_id": b_id,
+            "a_found": req_a is not None,
+            "b_found": req_b is not None,
+        }
 
     resp_a = ctx["responses"].get(a_id)
     resp_b = ctx["responses"].get(b_id)
@@ -599,8 +610,7 @@ def model_diff(ctx):
             "method": req.get("method"),
             "path": req.get("path"),
             "status": (resp or {}).get("status"),
-            "model": rc.get("model")
-                     or (req.get("request") or {}).get("model"),
+            "model": rc.get("model") or (req.get("request") or {}).get("model"),
         }
 
     return {
@@ -661,16 +671,17 @@ def model_timeline(ctx):
         if q:
             sys_t, _sys_blocks = system_text(r)
             sys_t = sys_t or ""
-            msgs_t = _flatten_messages_text(
-                (r.get("extract") or {}).get("messages"))
+            msgs_t = _flatten_messages_text((r.get("extract") or {}).get("messages"))
             paired_resp = ctx["responses"].get(xid) or {}
-            resp_t = ((paired_resp.get("reconstructed") or {}).get("text") or "")
+            resp_t = (paired_resp.get("reconstructed") or {}).get("text") or ""
             blob = (sys_t + "\n" + msgs_t + "\n" + resp_t).lower()
             if q.lower() not in blob:
                 continue
-            for src, body_text, bucket in (("system", sys_t, out_snippets),
-                                           ("messages", msgs_t, out_snippets),
-                                           ("response", resp_t, in_snippets)):
+            for src, body_text, bucket in (
+                ("system", sys_t, out_snippets),
+                ("messages", msgs_t, out_snippets),
+                ("response", resp_t, in_snippets),
+            ):
                 snip = _make_snippet(body_text, q)
                 if snip:
                     snip["source"] = src
@@ -691,15 +702,23 @@ def model_timeline(ctx):
         gap_out = None
         if prev_ts and ts_out_p:
             gap_out = (ts_out_p - prev_ts).total_seconds()
-        events.append({
-            "id": xid, "dir": "out", "ts": ts_out, "gap_s": gap_out,
-            "agent": r.get("agent"), "wire": r.get("wire"),
-            "upstream": upstream,
-            "method": r.get("method"), "path": r.get("path"),
-            "msg_count": msg_count, "tool_count": tool_count,
-            "system_chars": sys_chars,
-            "match_snippets": out_snippets,
-        })
+        events.append(
+            {
+                "id": xid,
+                "dir": "out",
+                "ts": ts_out,
+                "gap_s": gap_out,
+                "agent": r.get("agent"),
+                "wire": r.get("wire"),
+                "upstream": upstream,
+                "method": r.get("method"),
+                "path": r.get("path"),
+                "msg_count": msg_count,
+                "tool_count": tool_count,
+                "system_chars": sys_chars,
+                "match_snippets": out_snippets,
+            }
+        )
         if ts_out_p:
             prev_ts = ts_out_p
 
@@ -710,20 +729,29 @@ def model_timeline(ctx):
         if ts_in_p and prev_ts:
             gap_in = (ts_in_p - prev_ts).total_seconds()
         text = rc.get("text") if isinstance(rc, dict) else None
-        events.append({
-            "id": xid, "dir": "in", "ts": ts_in, "gap_s": gap_in,
-            "agent": r.get("agent"), "wire": r.get("wire"),
-            "upstream": upstream,
-            "status": resp.get("status") if resp else None,
-            "stream": resp.get("stream") if resp else None,
-            "model": rc.get("model") or (r.get("request") or {}).get("model"),
-            "tokens_in": i_tok, "tokens_out": o_tok, "tokens_cached": cached,
-            "event_count": resp.get("event_count") if resp else None,
-            "text_preview": (text[:80] + ("…" if len(text) > 80 else ""))
-                            if isinstance(text, str) else None,
-            "match_snippets": in_snippets,
-            "tools_invoked": tools_invoked,
-        })
+        events.append(
+            {
+                "id": xid,
+                "dir": "in",
+                "ts": ts_in,
+                "gap_s": gap_in,
+                "agent": r.get("agent"),
+                "wire": r.get("wire"),
+                "upstream": upstream,
+                "status": resp.get("status") if resp else None,
+                "stream": resp.get("stream") if resp else None,
+                "model": rc.get("model") or (r.get("request") or {}).get("model"),
+                "tokens_in": i_tok,
+                "tokens_out": o_tok,
+                "tokens_cached": cached,
+                "event_count": resp.get("event_count") if resp else None,
+                "text_preview": (text[:80] + ("…" if len(text) > 80 else ""))
+                if isinstance(text, str)
+                else None,
+                "match_snippets": in_snippets,
+                "tools_invoked": tools_invoked,
+            }
+        )
         if ts_in_p:
             prev_ts = ts_in_p
         exchanges += 1
@@ -737,21 +765,25 @@ def model_timeline(ctx):
     for ev in events:
         if ev["dir"] == "out":
             out_dt = _parse_ts(ev["ts"])
-            should_split = (
-                current_id < 0
-                or (last_in_dt is not None and out_dt is not None
-                    and (out_dt - last_in_dt).total_seconds() > session_gap_s)
+            should_split = current_id < 0 or (
+                last_in_dt is not None
+                and out_dt is not None
+                and (out_dt - last_in_dt).total_seconds() > session_gap_s
             )
             if should_split:
                 current_id += 1
-                sessions.append({
-                    "id": current_id,
-                    "start_ts": ev["ts"],
-                    "end_ts": ev["ts"],
-                    "exchange_count": 0,
-                    "_agents_set": set(),
-                    "tokens_in": 0, "tokens_out": 0, "tokens_cached": 0,
-                })
+                sessions.append(
+                    {
+                        "id": current_id,
+                        "start_ts": ev["ts"],
+                        "end_ts": ev["ts"],
+                        "exchange_count": 0,
+                        "_agents_set": set(),
+                        "tokens_in": 0,
+                        "tokens_out": 0,
+                        "tokens_cached": 0,
+                    }
+                )
             s = sessions[-1]
             s["exchange_count"] += 1
             if ev.get("agent"):
@@ -782,8 +814,7 @@ def model_timeline(ctx):
         if t:
             hour = t.replace(minute=0, second=0, microsecond=0)
             bucket_counts[hour.isoformat()] += 1
-    hour_buckets = [{"hour": h, "count": c}
-                    for h, c in sorted(bucket_counts.items())]
+    hour_buckets = [{"hour": h, "count": c} for h, c in sorted(bucket_counts.items())]
 
     # --- Token usage series (per-call + cumulative) -------------------------
     # Build the time series from "in" events (tokens are only known once the
@@ -805,30 +836,36 @@ def model_timeline(ctx):
             cached_t = 0
         total = in_t + out_t
         running += total
-        tokens_series.append({
-            "id": ev["id"], "ts": ev["ts"],
-            "in": in_t, "out": out_t, "cached": cached_t,
-            "total": total, "cumulative": running,
-            "session_id": ev.get("session_id"),
-            "agent": ev.get("agent"),
-        })
+        tokens_series.append(
+            {
+                "id": ev["id"],
+                "ts": ev["ts"],
+                "in": in_t,
+                "out": out_t,
+                "cached": cached_t,
+                "total": total,
+                "cumulative": running,
+                "session_id": ev.get("session_id"),
+                "agent": ev.get("agent"),
+            }
+        )
     tokens_total = running
 
     return {
         "agent_filter": agent_filter,
         "search": q,
         "form": {
-            "q":       q_raw,
-            "agent":   agent_filter or "",
-            "since":   (ctx["qs"].get("since") or [""])[0],
-            "from":    (ctx["qs"].get("from")  or [""])[0],
-            "to":      (ctx["qs"].get("to")    or [""])[0],
+            "q": q_raw,
+            "agent": agent_filter or "",
+            "since": (ctx["qs"].get("since") or [""])[0],
+            "from": (ctx["qs"].get("from") or [""])[0],
+            "to": (ctx["qs"].get("to") or [""])[0],
             "session_gap": str(session_gap_s),
             "invoked": invoked_filter,
         },
         "invoked_filter": invoked_filter,
         "effective_from": from_dt.isoformat() if from_dt else None,
-        "effective_to":   to_dt.isoformat()   if to_dt   else None,
+        "effective_to": to_dt.isoformat() if to_dt else None,
         "session_gap_s": session_gap_s,
         "sessions": sessions,
         "hour_buckets": hour_buckets,
@@ -1257,24 +1294,31 @@ def esc(value):
 
 
 def _nav(json_url=None):
-    api = (f'<span class="api">JSON: '
-           f'<a href="{esc(json_url)}">{esc(json_url)}</a></span>') if json_url else ""
-    return (f'<nav class="nav">'
-            f'<a href="/">Overview</a>'
-            f'<a href="/timeline">Timeline</a>'
-            f'<a href="/requests">Requests</a>'
-            f'<a href="/diff">Diff</a>'
-            f'{api}'
-            f'</nav>')
+    api = (
+        (f'<span class="api">JSON: ' f'<a href="{esc(json_url)}">{esc(json_url)}</a></span>')
+        if json_url
+        else ""
+    )
+    return (
+        f'<nav class="nav">'
+        f'<a href="/">Overview</a>'
+        f'<a href="/timeline">Timeline</a>'
+        f'<a href="/requests">Requests</a>'
+        f'<a href="/diff">Diff</a>'
+        f"{api}"
+        f"</nav>"
+    )
 
 
 def page(title, body_html, json_url=None):
-    return ("<!doctype html><html lang='en'><head>"
-            "<meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{esc(title)} · Interlude</title>"
-            f"<style>{CSS}</style></head><body>"
-            f"{_nav(json_url)}{body_html}</body></html>")
+    return (
+        "<!doctype html><html lang='en'><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{esc(title)} · Interlude</title>"
+        f"<style>{CSS}</style></head><body>"
+        f"{_nav(json_url)}{body_html}</body></html>"
+    )
 
 
 def render_json(obj, depth=0):
@@ -1283,32 +1327,41 @@ def render_json(obj, depth=0):
         if not obj:
             return "<code>{}</code>"
         open_attr = " open" if depth < 1 else ""
-        out = [f"<details{open_attr}>"
-               f"<summary><code>{{</code> {len(obj)} key"
-               f"{'s' if len(obj) != 1 else ''} <code>}}</code></summary>"
-               "<div class='json-tree'>"]
+        out = [
+            f"<details{open_attr}>"
+            f"<summary><code>{{</code> {len(obj)} key"
+            f"{'s' if len(obj) != 1 else ''} <code>}}</code></summary>"
+            "<div class='json-tree'>"
+        ]
         for k, v in obj.items():
-            out.append(f"<div><span class='json-key'>{esc(k)}</span>: "
-                       f"{render_json(v, depth + 1)}</div>")
+            out.append(
+                f"<div><span class='json-key'>{esc(k)}</span>: "
+                f"{render_json(v, depth + 1)}</div>"
+            )
         out.append("</div></details>")
         return "".join(out)
     if isinstance(obj, list):
         if not obj:
             return "<code>[]</code>"
         open_attr = " open" if depth < 1 else ""
-        out = [f"<details{open_attr}>"
-               f"<summary><code>[</code> {len(obj)} item"
-               f"{'s' if len(obj) != 1 else ''} <code>]</code></summary>"
-               "<div class='json-tree'>"]
+        out = [
+            f"<details{open_attr}>"
+            f"<summary><code>[</code> {len(obj)} item"
+            f"{'s' if len(obj) != 1 else ''} <code>]</code></summary>"
+            "<div class='json-tree'>"
+        ]
         for i, v in enumerate(obj):
-            out.append(f"<div><span class='json-idx'>{i}</span>"
-                       f"{render_json(v, depth + 1)}</div>")
+            out.append(
+                f"<div><span class='json-idx'>{i}</span>" f"{render_json(v, depth + 1)}</div>"
+            )
         out.append("</div></details>")
         return "".join(out)
     if isinstance(obj, str):
         if len(obj) > 200:
-            return (f"<details><summary>str ({len(obj)} chars)</summary>"
-                    f"<pre>{esc(obj)}</pre></details>")
+            return (
+                f"<details><summary>str ({len(obj)} chars)</summary>"
+                f"<pre>{esc(obj)}</pre></details>"
+            )
         return f"<code>{esc(json.dumps(obj))}</code>"
     return f"<code>{esc(json.dumps(obj))}</code>"
 
@@ -1356,9 +1409,11 @@ def _render_tokens_chart(tokens_series):
         total = p["total"]
         if total <= 0:
             # Mark zero-token events with a tiny tick so retries are visible
-            bars.append(f"<line x1='{x:.1f}' y1='{H_BAR-1}' x2='{x + bar_w:.1f}' "
-                        f"y2='{H_BAR-1}' stroke='#c33' stroke-width='1.5' "
-                        f"opacity='0.5'/>")
+            bars.append(
+                f"<line x1='{x:.1f}' y1='{H_BAR-1}' x2='{x + bar_w:.1f}' "
+                f"y2='{H_BAR-1}' stroke='#c33' stroke-width='1.5' "
+                f"opacity='0.5'/>"
+            )
             continue
         h_total = (total / max_call) * H_BAR
         # Stack (top → bottom): in_only, cached, out
@@ -1366,16 +1421,22 @@ def _render_tokens_chart(tokens_series):
         cached = p["cached"]
         out = p["out"]
         denom = in_only + cached + out or 1
-        h_in     = (in_only / denom) * h_total
-        h_cached = (cached  / denom) * h_total
-        h_out    = (out     / denom) * h_total
+        h_in = (in_only / denom) * h_total
+        h_cached = (cached / denom) * h_total
+        h_out = (out / denom) * h_total
         y0 = H_BAR - h_total
-        bars.append(f"<rect x='{x:.1f}' y='{y0:.2f}' width='{bar_w:.1f}' "
-                    f"height='{h_in:.2f}' fill='#5a9c4f'/>")
-        bars.append(f"<rect x='{x:.1f}' y='{(y0 + h_in):.2f}' width='{bar_w:.1f}' "
-                    f"height='{h_cached:.2f}' fill='#b8b8c0'/>")
-        bars.append(f"<rect x='{x:.1f}' y='{(y0 + h_in + h_cached):.2f}' "
-                    f"width='{bar_w:.1f}' height='{h_out:.2f}' fill='#3a78c8'/>")
+        bars.append(
+            f"<rect x='{x:.1f}' y='{y0:.2f}' width='{bar_w:.1f}' "
+            f"height='{h_in:.2f}' fill='#5a9c4f'/>"
+        )
+        bars.append(
+            f"<rect x='{x:.1f}' y='{(y0 + h_in):.2f}' width='{bar_w:.1f}' "
+            f"height='{h_cached:.2f}' fill='#b8b8c0'/>"
+        )
+        bars.append(
+            f"<rect x='{x:.1f}' y='{(y0 + h_in + h_cached):.2f}' "
+            f"width='{bar_w:.1f}' height='{h_out:.2f}' fill='#3a78c8'/>"
+        )
 
     # Cumulative line as a step path (tokens jump at the moment they land)
     pts = ["0," + f"{H_CUM}"]
@@ -1390,7 +1451,7 @@ def _render_tokens_chart(tokens_series):
     poly = " ".join(pts)
 
     start_lbl = min_ts.strftime("%Y-%m-%d %H:%M:%S")
-    end_lbl   = max_ts.strftime("%Y-%m-%d %H:%M:%S")
+    end_lbl = max_ts.strftime("%Y-%m-%d %H:%M:%S")
 
     return (
         "<div class='seq-tokens'>"
@@ -1425,8 +1486,9 @@ def _render_tokens_chart(tokens_series):
     )
 
 
-def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
-                           text_open=True, parts="both"):
+def _render_request_detail(
+    req, resp, *, top_h="h2", messages_open=False, text_open=True, parts="both"
+):
     """Inner HTML for a captured exchange. `parts` controls which half renders:
     - 'both' (default): headers + system + tools + messages, then response —
       used by /requests/<id>.
@@ -1445,10 +1507,12 @@ def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
             out.append(f"<{sub_h}>headers (kept)</{sub_h}>")
             out.append(render_json(req["headers_kept"]))
         if req.get("system") is not None:
-            out.append(f"<{top_h}>system <span class='muted'>"
-                       f"({req.get('system_chars', 0)} chars)</span></{top_h}>"
-                       f"<details><summary>full text</summary>"
-                       f"<pre>{esc(req['system'])}</pre></details>")
+            out.append(
+                f"<{top_h}>system <span class='muted'>"
+                f"({req.get('system_chars', 0)} chars)</span></{top_h}>"
+                f"<details><summary>full text</summary>"
+                f"<pre>{esc(req['system'])}</pre></details>"
+            )
         tools = req.get("tools")
         if isinstance(tools, list):
             out.append(f"<{top_h}>tools <span class='muted'>({len(tools)})</span></{top_h}>")
@@ -1456,34 +1520,45 @@ def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
                 if not isinstance(t, dict):
                     out.append(f"<details><summary><code>{esc(repr(t))}</code></summary></details>")
                     continue
-                n = (t.get("name") or (t.get("function") or {}).get("name")
-                     or t.get("type") or "<unknown>")
-                out.append(f"<details><summary><code>{esc(n)}</code></summary>"
-                           f"{render_json(t)}</details>")
+                n = (
+                    t.get("name")
+                    or (t.get("function") or {}).get("name")
+                    or t.get("type")
+                    or "<unknown>"
+                )
+                out.append(
+                    f"<details><summary><code>{esc(n)}</code></summary>"
+                    f"{render_json(t)}</details>"
+                )
         msgs = req.get("messages")
         if isinstance(msgs, list):
             out.append(f"<{top_h}>messages <span class='muted'>({len(msgs)})</span></{top_h}>")
             for i, msg in enumerate(msgs):
                 role = (msg.get("role") if isinstance(msg, dict) else None) or "?"
                 open_attr = " open" if messages_open else ""
-                out.append(f"<details{open_attr}><summary>[{i}] role=<code>{esc(role)}</code></summary>"
-                           f"{render_json(msg)}</details>")
+                out.append(
+                    f"<details{open_attr}><summary>[{i}] role=<code>{esc(role)}</code></summary>"
+                    f"{render_json(msg)}</details>"
+                )
     if show_resp:
         if parts == "both":
             out.append(f"<{top_h}>response</{top_h}>")
         if not resp:
-            out.append("<p class='muted'>(no paired response — the proxy may still "
-                       "be streaming, or this record predates Phase 4)</p>")
+            out.append(
+                "<p class='muted'>(no paired response — the proxy may still "
+                "be streaming, or this record predates Phase 4)</p>"
+            )
         else:
             status = resp.get("status")
-            s_class = ("status-ok" if isinstance(status, int) and status < 400
-                       else "status-err")
-            out.append("<dl class='kv'>"
-                       f"<dt>status</dt><dd class='{s_class}'>{esc(status)}</dd>"
-                       f"<dt>stream</dt><dd>{esc(resp.get('stream'))}</dd>"
-                       f"<dt>content-type</dt>"
-                       f"<dd><code>{esc(resp.get('content_type'))}</code></dd>"
-                       "</dl>")
+            s_class = "status-ok" if isinstance(status, int) and status < 400 else "status-err"
+            out.append(
+                "<dl class='kv'>"
+                f"<dt>status</dt><dd class='{s_class}'>{esc(status)}</dd>"
+                f"<dt>stream</dt><dd>{esc(resp.get('stream'))}</dd>"
+                f"<dt>content-type</dt>"
+                f"<dd><code>{esc(resp.get('content_type'))}</code></dd>"
+                "</dl>"
+            )
             rc = resp.get("reconstructed")
             if rc:
                 out.append(f"<{sub_h}>reassembled</{sub_h}>")
@@ -1491,8 +1566,10 @@ def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
                     out.append(f"<p>model: <code>{esc(rc.get('model'))}</code></p>")
                 if rc.get("text"):
                     text_attr = " open" if text_open else ""
-                    out.append(f"<details{text_attr}><summary>text</summary>"
-                               f"<pre>{esc(rc.get('text'))}</pre></details>")
+                    out.append(
+                        f"<details{text_attr}><summary>text</summary>"
+                        f"<pre>{esc(rc.get('text'))}</pre></details>"
+                    )
                 if rc.get("tool_uses"):
                     out.append(f"<h4>tool uses</h4>{render_json(rc.get('tool_uses'))}")
                 if rc.get("usage"):
@@ -1516,28 +1593,33 @@ def _render_request_detail(req, resp, *, top_h="h2", messages_open=False,
 
 
 def render_overview(m, ctx=None):
-    body = ["<h1>Interlude</h1>",
-            "<p class='muted'>"
-            f"{len(m['files'])} log file(s) · "
-            f"{m['request_count']} request record(s) · "
-            f"{m['response_count']} response record(s)"
-            "</p>",
-            "<p><a class='ov-cta' href='/timeline'>▶ Open timeline</a> "
-            "<span class='muted'>— chronological exchanges, click any card to "
-            "expand its system / tools / messages / response inline</span></p>"]
+    body = [
+        "<h1>Interlude</h1>",
+        "<p class='muted'>"
+        f"{len(m['files'])} log file(s) · "
+        f"{m['request_count']} request record(s) · "
+        f"{m['response_count']} response record(s)"
+        "</p>",
+        "<p><a class='ov-cta' href='/timeline'>▶ Open timeline</a> "
+        "<span class='muted'>— chronological exchanges, click any card to "
+        "expand its system / tools / messages / response inline</span></p>",
+    ]
     facts = m["agents"]
     if not facts:
-        body.append("<p>No analyzable records yet. Start the proxy "
-                    "(<code>uv run proxy.py</code>) and capture some traffic.</p>")
+        body.append(
+            "<p>No analyzable records yet. Start the proxy "
+            "(<code>uv run proxy.py</code>) and capture some traffic.</p>"
+        )
     else:
-        body.append("<h2>Per agent</h2><table>"
-                    "<tr><th>agent</th><th>requests</th><th>distinct system</th>"
-                    "<th>system median (chars)</th><th>fixed/total lines</th>"
-                    "<th>dynamic slots</th><th>tools</th><th>schema key</th>"
-                    "<th></th></tr>")
+        body.append(
+            "<h2>Per agent</h2><table>"
+            "<tr><th>agent</th><th>requests</th><th>distinct system</th>"
+            "<th>system median (chars)</th><th>fixed/total lines</th>"
+            "<th>dynamic slots</th><th>tools</th><th>schema key</th>"
+            "<th></th></tr>"
+        )
         for agent, f in sorted(facts.items()):
-            ratio = (f"{f['fixed']}/{f['unique_lines']}"
-                     if f['unique_lines'] else "—")
+            ratio = f"{f['fixed']}/{f['unique_lines']}" if f["unique_lines"] else "—"
             body.append(
                 f"<tr><td><span class='tag {esc(agent)}'>{esc(agent)}</span></td>"
                 f"<td>{f['reqs']}</td>"
@@ -1557,20 +1639,20 @@ def render_overview(m, ctx=None):
 
 
 def render_requests(m, ctx=None):
-    body = ["<h1>Requests</h1>",
-            "<p class='muted'>"
-            "<a href='/requests'>all</a> · "
-            "<a href='/requests?agent=claude'>claude</a> · "
-            "<a href='/requests?agent=codex'>codex</a>"
-            "</p>",
-            "<table><tr><th>ts (UTC)</th><th>agent</th><th>wire</th>"
-            "<th>path</th><th>status</th><th>model</th>"
-            "<th>tokens in / out / cached</th></tr>"]
+    body = [
+        "<h1>Requests</h1>",
+        "<p class='muted'>"
+        "<a href='/requests'>all</a> · "
+        "<a href='/requests?agent=claude'>claude</a> · "
+        "<a href='/requests?agent=codex'>codex</a>"
+        "</p>",
+        "<table><tr><th>ts (UTC)</th><th>agent</th><th>wire</th>"
+        "<th>path</th><th>status</th><th>model</th>"
+        "<th>tokens in / out / cached</th></tr>",
+    ]
     for r in m["rows"]:
         status = r["status"]
-        s_class = ("status-ok"
-                   if isinstance(status, int) and status < 400
-                   else "status-err")
+        s_class = "status-ok" if isinstance(status, int) and status < 400 else "status-err"
         body.append(
             f"<tr><td>{esc(r['ts'])}</td>"
             f"<td><span class='tag {esc(r['agent'])}'>{esc(r['agent'])}</span></td>"
@@ -1585,58 +1667,60 @@ def render_requests(m, ctx=None):
     body.append("</table>")
     if not m["rows"]:
         body.append("<p class='muted'>(no matching requests)</p>")
-    json_url = ("/api/requests?agent=" + m["agent_filter"]
-                if m["agent_filter"] else "/api/requests")
+    json_url = "/api/requests?agent=" + m["agent_filter"] if m["agent_filter"] else "/api/requests"
     return page("Requests", "".join(body), json_url=json_url)
 
 
 def render_request(m, ctx=None):
     req = m["request"]
     resp = m["response"]
-    body = [f"<h1>Request <code>{esc(m['id'])}</code></h1>",
-            "<dl class='kv'>"]
+    body = [f"<h1>Request <code>{esc(m['id'])}</code></h1>", "<dl class='kv'>"]
     for k in ("ts", "agent", "wire", "method", "path"):
         body.append(f"<dt>{esc(k)}</dt><dd><code>{esc(req.get(k, ''))}</code></dd>")
     body.append("</dl>")
     body.append(_render_request_detail(req, resp, top_h="h2"))
-    return page(f"Request {m['id']}", "".join(body),
-                json_url=f"/api/requests/{m['id']}")
+    return page(f"Request {m['id']}", "".join(body), json_url=f"/api/requests/{m['id']}")
 
 
 def render_skeleton(m, ctx=None):
     agent = m["agent"]
-    body = [f"<h1>Skeleton vs slots · "
-            f"<span class='tag {esc(agent)}'>{esc(agent)}</span></h1>"]
+    body = [f"<h1>Skeleton vs slots · " f"<span class='tag {esc(agent)}'>{esc(agent)}</span></h1>"]
     if m["distinct"] == 0:
         body.append("<p>No system samples captured for this agent.</p>")
-        return page(f"Skeleton {agent}", "".join(body),
-                    json_url=f"/api/skeleton/{agent}")
-    body.append(f"<p class='muted'>{m['distinct']} distinct sample(s) · "
-                f"{m['fixed']}/{m['unique_lines']} lines fixed · "
-                f"{len(m['dynamic_lines'])} dynamic slot line(s)</p>")
+        return page(f"Skeleton {agent}", "".join(body), json_url=f"/api/skeleton/{agent}")
+    body.append(
+        f"<p class='muted'>{m['distinct']} distinct sample(s) · "
+        f"{m['fixed']}/{m['unique_lines']} lines fixed · "
+        f"{len(m['dynamic_lines'])} dynamic slot line(s)</p>"
+    )
     if m["distinct"] < 2:
-        body.append("<p>Only 1 distinct system seen — capture more varied "
-                    "sessions to surface dynamic slots.</p>"
-                    "<h2>system text</h2>"
-                    f"<pre>{esc(m['canonical'])}</pre>")
+        body.append(
+            "<p>Only 1 distinct system seen — capture more varied "
+            "sessions to surface dynamic slots.</p>"
+            "<h2>system text</h2>"
+            f"<pre>{esc(m['canonical'])}</pre>"
+        )
     else:
         dyn_set = set(m["dynamic_lines"])
-        body.append("<h2>canonical sample "
-                    "<span class='muted'>(first distinct, dynamic lines highlighted)</span></h2>"
-                    "<div class='skel-canvas'>")
+        body.append(
+            "<h2>canonical sample "
+            "<span class='muted'>(first distinct, dynamic lines highlighted)</span></h2>"
+            "<div class='skel-canvas'>"
+        )
         for ln in m["canonical"].split("\n"):
             cls = "skel-dyn" if ln in dyn_set else "skel-fixed"
             body.append(f"<span class='{cls}'>{esc(ln)}</span>\n")
         body.append("</div>")
-        body.append(f"<h2>all dynamic-slot lines "
-                    f"<span class='muted'>({len(m['dynamic_lines'])})</span></h2>"
-                    "<ol>")
+        body.append(
+            f"<h2>all dynamic-slot lines "
+            f"<span class='muted'>({len(m['dynamic_lines'])})</span></h2>"
+            "<ol>"
+        )
         for ln in m["dynamic_lines"]:
             if ln.strip():
                 body.append(f"<li><code>{esc(ln[:400])}</code></li>")
         body.append("</ol>")
-    return page(f"Skeleton {agent}", "".join(body),
-                json_url=f"/api/skeleton/{agent}")
+    return page(f"Skeleton {agent}", "".join(body), json_url=f"/api/skeleton/{agent}")
 
 
 def render_tools(m, ctx=None):
@@ -1644,8 +1728,7 @@ def render_tools(m, ctx=None):
     body = [f"<h1>Tools · <span class='tag {esc(agent)}'>{esc(agent)}</span></h1>"]
     if not m["tools"]:
         body.append("<p>No tools captured for this agent.</p>")
-        return page(f"Tools {agent}", "".join(body),
-                    json_url=f"/api/tools/{agent}")
+        return page(f"Tools {agent}", "".join(body), json_url=f"/api/tools/{agent}")
     counts = m.get("invocation_counts") or {}
     body.append(
         f"<p class='muted'>{len(m['tools'])} tool(s) declared in the most "
@@ -1654,52 +1737,50 @@ def render_tools(m, ctx=None):
         f"{m.get('exchanges_analyzed', 0)} exchanges actually invoked a tool</p>"
     )
     if not counts and agent == "codex":
-        body.append("<p class='muted'>(note: codex tool invocations are not yet "
-                    "extracted by proxy.py — counts will appear once "
-                    "<code>reconstruct_codex_responses</code> learns to emit "
-                    "<code>tool_uses</code>)</p>")
+        body.append(
+            "<p class='muted'>(note: codex tool invocations are not yet "
+            "extracted by proxy.py — counts will appear once "
+            "<code>reconstruct_codex_responses</code> learns to emit "
+            "<code>tool_uses</code>)</p>"
+        )
     # Order: invoked tools first (by descending count), then unused
     ranked = sorted(
         m["tools"],
-        key=lambda t: -counts.get((t.get("name") or
-                                   (t.get("function") or {}).get("name") or
-                                   t.get("type") or ""), 0),
+        key=lambda t: -counts.get(
+            (t.get("name") or (t.get("function") or {}).get("name") or t.get("type") or ""), 0
+        ),
     )
     for t in ranked:
         if not isinstance(t, dict):
             continue
-        n = (t.get("name")
-             or (t.get("function") or {}).get("name")
-             or t.get("type")
-             or "<unknown>")
+        n = t.get("name") or (t.get("function") or {}).get("name") or t.get("type") or "<unknown>"
         cnt = counts.get(n, 0)
         count_chip = (
             f"<span class='tool-count tool-count-used'>{cnt}× invoked "
             f"<a href='/timeline?invoked={quote_plus(n)}&amp;agent={esc(agent)}'>"
             f"→ filter</a></span>"
-            if cnt > 0 else
-            f"<span class='tool-count muted'>0× invoked</span>"
+            if cnt > 0
+            else "<span class='tool-count muted'>0× invoked</span>"
         )
         body.append(
             f"<details><summary>"
             f"<code>{esc(n)}</code> {count_chip}"
             f"</summary>{render_json(t)}</details>"
         )
-    return page(f"Tools {agent}", "".join(body),
-                json_url=f"/api/tools/{agent}")
+    return page(f"Tools {agent}", "".join(body), json_url=f"/api/tools/{agent}")
 
 
 def render_diff(m, ctx=None):
     a_id = m.get("a_id") or (m.get("a") or {}).get("id") or ""
     b_id = m.get("b_id") or (m.get("b") or {}).get("id") or ""
-    json_url = (f"/api/diff?a={quote_plus(a_id)}&b={quote_plus(b_id)}"
-                if a_id and b_id else "/api/diff")
+    json_url = (
+        f"/api/diff?a={quote_plus(a_id)}&b={quote_plus(b_id)}" if a_id and b_id else "/api/diff"
+    )
 
     if m["state"] == "need_input":
         recent_picker = []
         if ctx and ctx.get("requests"):
-            recent = sorted(ctx["requests"], key=lambda r: r.get("ts", ""),
-                            reverse=True)[:25]
+            recent = sorted(ctx["requests"], key=lambda r: r.get("ts", ""), reverse=True)[:25]
             for r in recent:
                 rid = r.get("id") or ""
                 recent_picker.append(
@@ -1787,15 +1868,11 @@ def render_diff(m, ctx=None):
         )
         body.append("<pre class='diff-block'>")
         for line in sysd["diff"]:
-            body.append(
-                f"<span class='diff-{line['type']}'>{esc(line['text'])}</span>\n"
-            )
+            body.append(f"<span class='diff-{line['type']}'>{esc(line['text'])}</span>\n")
         body.append("</pre>")
 
     td = m["tools"]
-    body.append(
-        f"<h2>tools <span class='muted'>(A {td['a_total']}, B {td['b_total']})</span></h2>"
-    )
+    body.append(f"<h2>tools <span class='muted'>(A {td['a_total']}, B {td['b_total']})</span></h2>")
     sections = []
     if td["added"]:
         sections.append(
@@ -1815,11 +1892,7 @@ def render_diff(m, ctx=None):
             + ", ".join(f"<code>{esc(n)}</code>" for n in td["changed"])
             + "</p>"
         )
-    body.append(
-        "".join(sections)
-        if sections
-        else "<p class='muted'>(identical tool set)</p>"
-    )
+    body.append("".join(sections) if sections else "<p class='muted'>(identical tool set)</p>")
 
     md = m["messages"]
     body.append(
@@ -1872,21 +1945,31 @@ def render_timeline(m, ctx=None):
         sel = " selected" if value == current else ""
         return f"<option value='{esc(value)}'{sel}>{esc(label or value or '—')}</option>"
 
-    agent_opts = "".join(opt("agent", v, form["agent"], lbl)
-                         for v, lbl in (("", "all"), ("claude", "claude"),
-                                        ("codex", "codex")))
-    since_opts = "".join(opt("since", v, form["since"], lbl)
-                         for v, lbl in (("", "—"), ("5m", "last 5m"),
-                                        ("1h", "last 1h"), ("6h", "last 6h"),
-                                        ("24h", "last 24h"), ("7d", "last 7d")))
+    agent_opts = "".join(
+        opt("agent", v, form["agent"], lbl)
+        for v, lbl in (("", "all"), ("claude", "claude"), ("codex", "codex"))
+    )
+    since_opts = "".join(
+        opt("since", v, form["since"], lbl)
+        for v, lbl in (
+            ("", "—"),
+            ("5m", "last 5m"),
+            ("1h", "last 1h"),
+            ("6h", "last 6h"),
+            ("24h", "last 24h"),
+            ("7d", "last 7d"),
+        )
+    )
 
     active = ""
     if m["effective_from"] or m["effective_to"]:
         from_lbl = esc(m["effective_from"] or "(start)")
         to_lbl = esc(m["effective_to"] or "(end)")
-        active = (f"<p class='seq-active-range muted'>"
-                  f"active range (UTC): <code>{from_lbl}</code> → "
-                  f"<code>{to_lbl}</code></p>")
+        active = (
+            f"<p class='seq-active-range muted'>"
+            f"active range (UTC): <code>{from_lbl}</code> → "
+            f"<code>{to_lbl}</code></p>"
+        )
 
     body = [
         "<h1>Timeline</h1>",
@@ -1918,10 +2001,12 @@ def render_timeline(m, ctx=None):
     # --- Per-hour density histogram (clickable to filter that hour) ---------
     if m["hour_buckets"]:
         max_count = max(b["count"] for b in m["hour_buckets"])
-        body.append("<div class='seq-histogram'>"
-                    "<div class='seq-hist-title muted'>exchanges per hour "
-                    "(click a bar to filter)</div>")
-        agent_q = (f"&agent={esc(form['agent'])}" if form["agent"] else "")
+        body.append(
+            "<div class='seq-histogram'>"
+            "<div class='seq-hist-title muted'>exchanges per hour "
+            "(click a bar to filter)</div>"
+        )
+        agent_q = f"&agent={esc(form['agent'])}" if form["agent"] else ""
         for b in m["hour_buckets"]:
             try:
                 hour_dt = datetime.fromisoformat(b["hour"])
@@ -1946,8 +2031,10 @@ def render_timeline(m, ctx=None):
     body.append(_render_tokens_chart(m["tokens_series"]))
 
     if not m["events"]:
-        body.append("<p class='muted'>(no exchanges matched — capture some "
-                    "traffic, or relax the filter)</p>")
+        body.append(
+            "<p class='muted'>(no exchanges matched — capture some "
+            "traffic, or relax the filter)</p>"
+        )
         return page("Timeline", "".join(body), json_url=json_url)
 
     body.append(
@@ -1989,10 +2076,16 @@ def render_timeline(m, ctx=None):
                     dur = "—"
                 # Per-session filter link (snaps to second precision; +1s on
                 # the end so the boundary event stays inside).
-                s_from = (start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                          if start_dt else (s["start_ts"] or "")[:19])
-                s_to = ((end_dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S")
-                        if end_dt else (s["end_ts"] or "")[:19])
+                s_from = (
+                    start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                    if start_dt
+                    else (s["start_ts"] or "")[:19]
+                )
+                s_to = (
+                    (end_dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S")
+                    if end_dt
+                    else (s["end_ts"] or "")[:19]
+                )
                 agent_q = f"&agent={esc(form['agent'])}" if form["agent"] else ""
                 filter_href = f"/timeline?from={s_from}&to={s_to}{agent_q}"
                 agents_lbl = ", ".join(s["agents"]) if s["agents"] else "?"
@@ -2019,49 +2112,65 @@ def render_timeline(m, ctx=None):
 
         if direction == "out":
             # Outbound: agent → API
-            label = (f"<code>{esc(ev.get('method') or '')} "
-                     f"{esc(ev.get('path') or '')}</code>")
-            meta = (f"<span class='muted'>msgs:{ev['msg_count']} · "
-                    f"tools:{ev['tool_count']} · "
-                    f"system {ev['system_chars']} chars</span>")
-            detail = (_render_request_detail(_build_request_detail(raw) if raw else {},
-                                             None, top_h="h4",
-                                             messages_open=True, parts="req")
-                      if raw else
-                      "<p class='muted'>(no request record)</p>")
+            label = f"<code>{esc(ev.get('method') or '')} " f"{esc(ev.get('path') or '')}</code>"
+            meta = (
+                f"<span class='muted'>msgs:{ev['msg_count']} · "
+                f"tools:{ev['tool_count']} · "
+                f"system {ev['system_chars']} chars</span>"
+            )
+            detail = (
+                _render_request_detail(
+                    _build_request_detail(raw) if raw else {},
+                    None,
+                    top_h="h4",
+                    messages_open=True,
+                    parts="req",
+                )
+                if raw
+                else "<p class='muted'>(no request record)</p>"
+            )
         else:
             # Inbound: API → agent
             status = ev.get("status")
-            s_class = ("status-ok" if isinstance(status, int) and status < 400
-                       else "status-err")
+            s_class = "status-ok" if isinstance(status, int) and status < 400 else "status-err"
             tokens_bits = []
-            for k, lbl in (("tokens_in", "in"), ("tokens_out", "out"),
-                           ("tokens_cached", "cached")):
+            for k, lbl in (("tokens_in", "in"), ("tokens_out", "out"), ("tokens_cached", "cached")):
                 if ev.get(k) is not None:
                     tokens_bits.append(f"{esc(ev[k])} {lbl}")
             tokens_str = (" · " + " · ".join(tokens_bits)) if tokens_bits else ""
             preview = ev.get("text_preview")
-            text_part = (f" · text=<code>{esc(repr(preview))}</code>"
-                         if preview else "")
-            label = (f"<span class='{s_class}'>"
-                     f"{esc(status) if status is not None else '—'}</span>"
-                     f"{text_part}")
-            meta = (f"<span class='muted'>"
-                    f"events:{ev.get('event_count') if ev.get('event_count') is not None else '—'}"
-                    f"{tokens_str}</span>")
-            detail = _render_request_detail({}, resp, top_h="h4",
-                                            messages_open=False, text_open=True,
-                                            parts="resp")
+            text_part = f" · text=<code>{esc(repr(preview))}</code>" if preview else ""
+            label = (
+                f"<span class='{s_class}'>"
+                f"{esc(status) if status is not None else '—'}</span>"
+                f"{text_part}"
+            )
+            meta = (
+                f"<span class='muted'>"
+                f"events:{ev.get('event_count') if ev.get('event_count') is not None else '—'}"
+                f"{tokens_str}</span>"
+            )
+            detail = _render_request_detail(
+                {}, resp, top_h="h4", messages_open=False, text_open=True, parts="resp"
+            )
 
-        agent_chip = (f"<span class='tag {esc(agent)}'>{esc(agent)}</span>"
-                      if direction == "out" else "")
-        api_chip = (f"<span class='muted seq-api-label'>{esc(ev.get('upstream') or 'API')}</span>"
-                    if direction == "out" else "")
+        agent_chip = (
+            f"<span class='tag {esc(agent)}'>{esc(agent)}</span>" if direction == "out" else ""
+        )
+        api_chip = (
+            f"<span class='muted seq-api-label'>{esc(ev.get('upstream') or 'API')}</span>"
+            if direction == "out"
+            else ""
+        )
         # On 'in' arrows show the API origin on the left side
-        in_origin = (f"<span class='muted seq-api-label'>{esc(ev.get('upstream') or 'API')}</span>"
-                     if direction == "in" else "")
-        in_target = (f"<span class='tag {esc(agent)}'>{esc(agent)}</span>"
-                     if direction == "in" else "")
+        in_origin = (
+            f"<span class='muted seq-api-label'>{esc(ev.get('upstream') or 'API')}</span>"
+            if direction == "in"
+            else ""
+        )
+        in_target = (
+            f"<span class='tag {esc(agent)}'>{esc(agent)}</span>" if direction == "in" else ""
+        )
 
         # Optional RTT bar for "in" arrows (gap_s is the response time relative
         # to the matching "out").
@@ -2158,13 +2267,13 @@ def render_timeline(m, ctx=None):
 
 ROUTES = [
     # (regex,                                                model,          renderer)
-    (re.compile(r"^/$"),                                    model_overview,  render_overview),
-    (re.compile(r"^/timeline$"),                            model_timeline,  render_timeline),
-    (re.compile(r"^/requests$"),                            model_requests,  render_requests),
-    (re.compile(r"^/requests/(?P<xid>[0-9a-f]+)$"),         model_request,   render_request),
-    (re.compile(r"^/skeleton/(?P<agent>[a-zA-Z0-9_-]+)$"),  model_skeleton,  render_skeleton),
-    (re.compile(r"^/tools/(?P<agent>[a-zA-Z0-9_-]+)$"),     model_tools,     render_tools),
-    (re.compile(r"^/diff$"),                                model_diff,      render_diff),
+    (re.compile(r"^/$"), model_overview, render_overview),
+    (re.compile(r"^/timeline$"), model_timeline, render_timeline),
+    (re.compile(r"^/requests$"), model_requests, render_requests),
+    (re.compile(r"^/requests/(?P<xid>[0-9a-f]+)$"), model_request, render_request),
+    (re.compile(r"^/skeleton/(?P<agent>[a-zA-Z0-9_-]+)$"), model_skeleton, render_skeleton),
+    (re.compile(r"^/tools/(?P<agent>[a-zA-Z0-9_-]+)$"), model_tools, render_tools),
+    (re.compile(r"^/diff$"), model_diff, render_diff),
 ]
 
 
@@ -2190,10 +2299,12 @@ def dispatch(url_path, qs, ctx_base):
         model = model_fn(ctx)
         if model is None:  # explicit not-found
             if json_mode:
-                return (404, "application/json",
-                        b'{"error":"not found"}')
-            return (404, "text/html; charset=utf-8",
-                    page("Not found", "<h1>404</h1>").encode("utf-8"))
+                return (404, "application/json", b'{"error":"not found"}')
+            return (
+                404,
+                "text/html; charset=utf-8",
+                page("Not found", "<h1>404</h1>").encode("utf-8"),
+            )
         if json_mode:
             data = json.dumps(model, ensure_ascii=False, default=str).encode("utf-8")
             return 200, "application/json", data
@@ -2247,13 +2358,15 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sv = sub.add_parser("serve", help="run the local web UI")
     sv.add_argument("--port", type=int, default=8000)
-    sv.add_argument("--logs", default=".interlude/log-*.jsonl",
-                    help="glob for JSONL files (default: .interlude/log-*.jsonl)")
+    sv.add_argument(
+        "--logs",
+        default=".interlude/log-*.jsonl",
+        help="glob for JSONL files (default: .interlude/log-*.jsonl)",
+    )
     args = ap.parse_args()
 
     if args.cmd == "serve":
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", args.port),
-                                                make_handler(args.logs))
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(args.logs))
         print(f"[interlude-report] http://127.0.0.1:{args.port}", flush=True)
         print(f"[interlude-report] watching {args.logs}", flush=True)
         try:
