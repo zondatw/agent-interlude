@@ -1,0 +1,44 @@
+default_stages: [pre-commit]
+
+repos:
+  # Generic hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # Python lint + format. Use ruff for both so we have one tool, not two
+  # (avoids the black-vs-ruff-format formatting tug-of-war).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Common typo catcher. Cheap, high signal.
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        exclude_types: [json]
+        # Words we do NOT want auto-"corrected":
+        #   uv / codex / interlude — tool / project names.
+        #   te                     — HTTP TE header name in proxy.py REQ_DROP.
+        #   Nd                     — docstring placeholder for "N days" in
+        #                            `since=Nm|Nh|Nd` (alongside Nm, Nh, etc.).
+        args: [-L, "uv,codex,interlude,te,Nd,nd"]
+
+  # Secret scanner. The whole project is built around capturing prompts that
+  # could brush against API keys / Bearer tokens / JWTs, so a stray paste in
+  # docs or source must be blocked at commit time. Logs themselves live in
+  # .interlude/ which is gitignored, so gitleaks never sees them.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

@@ -28,6 +28,13 @@ reassembled and archived once the stream ends. The agent notices nothing.
 - [`uv`](https://docs.astral.sh/uv/) (all Python in this project runs through uv)
 - `claude` (Claude Code CLI), `codex` (Codex CLI)
 
+For contributors: install [`pre-commit`](https://pre-commit.com/) and
+[`gitleaks`](https://github.com/gitleaks/gitleaks) (`brew install pre-commit gitleaks`),
+then run `pre-commit install` once. Subsequent `git commit` will auto-run
+ruff lint+format, hygiene checks (trailing whitespace, EOF, private keys,
+yaml/toml syntax), codespell, and gitleaks. Run `pre-commit run --all-files`
+to check the whole tree at once.
+
 ## Quick start
 
 ```bash
@@ -168,7 +175,7 @@ The report covers:
 
 ## Web UI
 
-For a browseable view of the same data — with per-request drill-in,
+For a browsable view of the same data — with per-request drill-in,
 skeleton-vs-slot highlighting in context, and a tools schema browser —
 launch the local web UI:
 

@@ -7,3 +7,24 @@ dependencies = []
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Conservative starter set:
+#   E/W : pycodestyle errors and warnings
+#   F   : pyflakes (actual bugs — undefined names, unused imports)
+#   I   : isort (import order)
+#   UP  : pyupgrade (modernize syntax for the target Python)
+select = ["E", "W", "F", "I", "UP"]
+# Hand-written HTML/CSS template strings and embedded SVG run wide. Lines
+# already get broken when it improves readability; the linter should not
+# fight aesthetics.
+ignore = ["E501"]
+
+[tool.ruff.format]
+# Match the existing hand-rolled style: double quotes, no aggressive
+# reformatting of multi-line string literals.
+quote-style = "double"

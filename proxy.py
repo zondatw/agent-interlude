@@ -21,13 +21,13 @@ import threading
 import time
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # (port, upstream_host, agent_label) — add a row to support another agent.
 LISTENERS = [
     (8788, "api.anthropic.com", "claude"),
-    (8789, "api.openai.com", "codex"),    # Codex via OpenAI API key (custom provider)
-    (8790, "chatgpt.com", "codex"),       # Codex via ChatGPT login (chatgpt_base_url)
+    (8789, "api.openai.com", "codex"),  # Codex via OpenAI API key (custom provider)
+    (8790, "chatgpt.com", "codex"),  # Codex via ChatGPT login (chatgpt_base_url)
 ]
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".interlude")
@@ -37,20 +37,31 @@ LOG_LOCK = threading.Lock()
 # Headers stripped before forwarding the request upstream. accept-encoding is
 # dropped so responses come back uncompressed and are always parseable.
 REQ_DROP = {
-    "host", "connection", "keep-alive", "proxy-authenticate",
-    "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
     "accept-encoding",
 }
 # Headers stripped from the upstream response (we re-frame the body as chunked).
 RESP_DROP = REQ_DROP | {"content-length"}
 # Only these request headers are persisted — auth headers are never logged.
 KEEP_HEADERS = {
-    "content-type", "anthropic-version", "anthropic-beta",
-    "openai-beta", "openai-organization", "user-agent",
+    "content-type",
+    "anthropic-version",
+    "anthropic-beta",
+    "openai-beta",
+    "openai-organization",
+    "user-agent",
 }
 
-MAX_TEXT = 20000          # cap on a reconstructed text field
-MAX_BODY_JSON = 65536     # cap on a stored non-stream JSON body (serialized)
+MAX_TEXT = 20000  # cap on a reconstructed text field
+MAX_BODY_JSON = 65536  # cap on a stored non-stream JSON body (serialized)
 TEE_CAP = 16 * 1024 * 1024  # cap on the in-memory response copy
 
 
@@ -73,17 +84,22 @@ def extract(wire, body):
     if not isinstance(body, dict):
         return None
     if wire == "claude-messages":
-        return {"system": body.get("system"), "tools": body.get("tools"),
-                "messages": body.get("messages")}
+        return {
+            "system": body.get("system"),
+            "tools": body.get("tools"),
+            "messages": body.get("messages"),
+        }
     if wire == "codex-responses":
-        return {"system": body.get("instructions"), "tools": body.get("tools"),
-                "messages": body.get("input")}
+        return {
+            "system": body.get("instructions"),
+            "tools": body.get("tools"),
+            "messages": body.get("input"),
+        }
     if wire == "codex-chat":
         msgs = body.get("messages")
         system = None
         if isinstance(msgs, list):
-            system = [m for m in msgs
-                      if isinstance(m, dict) and m.get("role") == "system"] or None
+            system = [m for m in msgs if isinstance(m, dict) and m.get("role") == "system"] or None
         return {"system": system, "tools": body.get("tools"), "messages": msgs}
     return None
 
@@ -105,9 +121,9 @@ def parse_sse(text):
         event, data_lines = None, []
         for line in block.split("\n"):
             if line.startswith("event:"):
-                event = line[len("event:"):].strip()
+                event = line[len("event:") :].strip()
             elif line.startswith("data:"):
-                data_lines.append(line[len("data:"):].lstrip())
+                data_lines.append(line[len("data:") :].lstrip())
         data = "\n".join(data_lines)
         try:
             parsed = json.loads(data) if data else None
@@ -142,7 +158,8 @@ def reconstruct_claude(events):
                 text.append(delta.get("text", ""))
             elif delta.get("type") == "input_json_delta":
                 tools.get(d.get("index"), {}).setdefault("json", []).append(
-                    delta.get("partial_json", ""))
+                    delta.get("partial_json", "")
+                )
         elif t == "message_delta":
             if "stop_reason" in (d.get("delta") or {}):
                 stop = d["delta"]["stop_reason"]
@@ -155,8 +172,14 @@ def reconstruct_claude(events):
         except ValueError:
             inp = {"_raw": raw[:500]}
         tool_uses.append({"name": tools[idx].get("name"), "input": inp})
-    return {"model": model, "id": mid, "stop_reason": stop, "usage": usage,
-            "text": _cap("".join(text)), "tool_uses": tool_uses}
+    return {
+        "model": model,
+        "id": mid,
+        "stop_reason": stop,
+        "usage": usage,
+        "text": _cap("".join(text)),
+        "tool_uses": tool_uses,
+    }
 
 
 def reconstruct_codex_responses(events):
@@ -173,8 +196,13 @@ def reconstruct_codex_responses(events):
             model, rid = r.get("model", model), r.get("id", rid)
             usage = r.get("usage", usage)
             status = r.get("status", status)
-    return {"model": model, "id": rid, "status": status, "usage": usage,
-            "text": _cap("".join(text))}
+    return {
+        "model": model,
+        "id": rid,
+        "status": status,
+        "usage": usage,
+        "text": _cap("".join(text)),
+    }
 
 
 def reconstruct_codex_chat(events):
@@ -191,8 +219,7 @@ def reconstruct_codex_chat(events):
             if ch.get("finish_reason"):
                 finish = ch["finish_reason"]
         usage = d.get("usage") or usage
-    return {"model": model, "finish_reason": finish, "usage": usage,
-            "text": _cap("".join(text))}
+    return {"model": model, "finish_reason": finish, "usage": usage, "text": _cap("".join(text))}
 
 
 def reconstruct(wire, events):
@@ -209,7 +236,7 @@ def reconstruct(wire, events):
 
 
 def _now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _append(record):
@@ -226,21 +253,34 @@ def log_request(xid, agent, wire, method, path, headers, body):
             parsed = json.loads(raw)
         except ValueError:
             parsed = None
-        _append({
-            "id": xid, "kind": "request", "ts": _now(),
-            "agent": agent, "wire": wire, "method": method, "path": path,
-            "headers_kept": kept_headers(headers),
-            "request": parsed if parsed is not None else raw,
-            "extract": extract(wire, parsed),
-        })
+        _append(
+            {
+                "id": xid,
+                "kind": "request",
+                "ts": _now(),
+                "agent": agent,
+                "wire": wire,
+                "method": method,
+                "path": path,
+                "headers_kept": kept_headers(headers),
+                "request": parsed if parsed is not None else raw,
+                "extract": extract(wire, parsed),
+            }
+        )
     except Exception as e:  # logging must never break the proxy
         print(f"[interlude] log_request error: {e}", flush=True)
 
 
 def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", error=None):
     try:
-        rec = {"id": xid, "kind": "response", "ts": _now(),
-               "agent": agent, "wire": wire, "status": status}
+        rec = {
+            "id": xid,
+            "kind": "response",
+            "ts": _now(),
+            "agent": agent,
+            "wire": wire,
+            "status": status,
+        }
         if error is not None:
             rec["error"] = error
         elif cenc and cenc.lower() not in ("", "identity"):
@@ -251,14 +291,21 @@ def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", erro
             sniff = text[:256].lstrip()
             # Detect SSE by content-type OR by sniffing the body, since some
             # backends (e.g. the ChatGPT backend) mislabel the stream.
-            if "text/event-stream" in (ctype or "").lower() or sniff.startswith(("event:", "data:")):
+            if "text/event-stream" in (ctype or "").lower() or sniff.startswith(
+                ("event:", "data:")
+            ):
                 events = parse_sse(text)
                 types = Counter(
                     ev.get("event")
                     or (ev["data"].get("type") if isinstance(ev.get("data"), dict) else None)
-                    for ev in events)
-                rec.update(stream=True, event_count=len(events),
-                           event_types=dict(types), reconstructed=reconstruct(wire, events))
+                    for ev in events
+                )
+                rec.update(
+                    stream=True,
+                    event_count=len(events),
+                    event_types=dict(types),
+                    reconstructed=reconstruct(wire, events),
+                )
             else:
                 rec["stream"] = False
                 try:
@@ -267,8 +314,10 @@ def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", erro
                     rec["body"] = _cap(text)
                 else:
                     if obj is not None and len(json.dumps(obj)) > MAX_BODY_JSON:
-                        rec["body"] = {"_truncated": True,
-                                       "_keys": list(obj) if isinstance(obj, dict) else None}
+                        rec["body"] = {
+                            "_truncated": True,
+                            "_keys": list(obj) if isinstance(obj, dict) else None,
+                        }
                     else:
                         rec["body"] = obj
         rec["content_type"] = ctype
@@ -308,8 +357,7 @@ def make_handler(upstream_host, agent_label):
             log_request(xid, self.AGENT, wire, self.command, self.path, self.headers, body)
 
             try:
-                fwd = {k: v for k, v in self.headers.items()
-                       if k.lower() not in REQ_DROP}
+                fwd = {k: v for k, v in self.headers.items() if k.lower() not in REQ_DROP}
                 conn = http.client.HTTPSConnection(self.UPSTREAM, timeout=600)
                 conn.request(self.command, self.path, body=body or None, headers=fwd)
                 resp = conn.getresponse()
@@ -320,9 +368,12 @@ def make_handler(upstream_host, agent_label):
 
             # Footgun guard: a ChatGPT-login token 401s against api.openai.com.
             if self.AGENT == "codex" and resp.status == 401 and self.UPSTREAM == "api.openai.com":
-                print("[interlude] hint: Codex got 401 from api.openai.com. If you log in "
-                      "with ChatGPT (no API key), use route A — base_url "
-                      "http://localhost:8790/backend-api/codex", flush=True)
+                print(
+                    "[interlude] hint: Codex got 401 from api.openai.com. If you log in "
+                    "with ChatGPT (no API key), use route A — base_url "
+                    "http://localhost:8790/backend-api/codex",
+                    flush=True,
+                )
 
             ctype = resp.getheader("Content-Type", "")
             cenc = resp.getheader("Content-Encoding", "")
@@ -358,8 +409,9 @@ def make_handler(upstream_host, agent_label):
                 print(f"[interlude] relay interrupted: {e}", flush=True)
             finally:
                 conn.close()
-                log_response(xid, self.AGENT, wire, resp.status, ctype,
-                             bytes(buf), truncated, cenc=cenc)
+                log_response(
+                    xid, self.AGENT, wire, resp.status, ctype, bytes(buf), truncated, cenc=cenc
+                )
 
         do_GET = _handle
         do_POST = _handle
@@ -375,20 +427,20 @@ def make_handler(upstream_host, agent_label):
 def main():
     global LOG_PATH
     os.makedirs(LOG_DIR, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     LOG_PATH = os.path.join(LOG_DIR, f"log-{stamp}.jsonl")
 
     servers = []
     for port, host, label in LISTENERS:
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port),
-                                                make_handler(host, label))
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), make_handler(host, label))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         servers.append(httpd)
-        print(f"[interlude] {label}: http://127.0.0.1:{port} -> https://{host}",
-              flush=True)
+        print(f"[interlude] {label}: http://127.0.0.1:{port} -> https://{host}", flush=True)
     print(f"[interlude] logging to {LOG_PATH}", flush=True)
-    print(f"[interlude] web UI:  uv run report.py serve  ->  "
-          f"http://127.0.0.1:8000/timeline", flush=True)
+    print(
+        "[interlude] web UI:  uv run report.py serve  ->  " "http://127.0.0.1:8000/timeline",
+        flush=True,
+    )
 
     try:
         while True:

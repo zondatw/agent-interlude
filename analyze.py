@@ -117,8 +117,7 @@ def skeleton(distinct_texts):
             freq[ln] += 1
     fixed = [ln for ln, c in freq.items() if c == k]
     dynamic = [ln for ln, c in freq.items() if 0 < c < k]
-    return {"distinct": k, "unique_lines": len(freq),
-            "fixed": len(fixed), "dynamic_lines": dynamic}
+    return {"distinct": k, "unique_lines": len(freq), "fixed": len(fixed), "dynamic_lines": dynamic}
 
 
 # --- reporting ---------------------------------------------------------------
@@ -132,8 +131,10 @@ def trunc(s, n=100):
 def analyze_agent(agent, recs, max_slots):
     print(f"\n## Agent: {agent}")
     wires = Counter(r["wire"] for r in recs)
-    print(f"requests analyzed: {len(recs)}  | wire(s): "
-          + ", ".join(f"{w}×{c}" for w, c in wires.items()))
+    print(
+        f"requests analyzed: {len(recs)}  | wire(s): "
+        + ", ".join(f"{w}×{c}" for w, c in wires.items())
+    )
 
     # system ---------------------------------------------------------------
     sys_samples, block_counts = [], []
@@ -148,14 +149,21 @@ def analyze_agent(agent, recs, max_slots):
         sizes = [len(t) for t in sys_samples]
         distinct = list(dict.fromkeys(sys_samples))  # preserve order, dedup
         sk = skeleton(distinct)
-        bc_note = (f"{statistics.median(block_counts):.0f} block(s)/req"
-                   if max(block_counts) > 1 else "single string")
+        bc_note = (
+            f"{statistics.median(block_counts):.0f} block(s)/req"
+            if max(block_counts) > 1
+            else "single string"
+        )
         print(f"- representation : {bc_note}")
-        print(f"- size (chars)   : min={min(sizes)} median={statistics.median(sizes):.0f} max={max(sizes)}")
+        print(
+            f"- size (chars)   : min={min(sizes)} median={statistics.median(sizes):.0f} max={max(sizes)}"
+        )
         print(f"- distinct samples: {sk['distinct']} (of {len(sys_samples)} requests)")
         if sk["distinct"] < 2:
-            print("- skeleton/slots : only 1 distinct system seen — capture more "
-                  "varied sessions to surface dynamic slots")
+            print(
+                "- skeleton/slots : only 1 distinct system seen — capture more "
+                "varied sessions to surface dynamic slots"
+            )
         else:
             pct = 100 * sk["fixed"] / sk["unique_lines"] if sk["unique_lines"] else 0
             print(f"- skeleton       : {sk['fixed']}/{sk['unique_lines']} lines fixed ({pct:.0f}%)")
@@ -165,8 +173,9 @@ def analyze_agent(agent, recs, max_slots):
                 print(f"    • {ln}")
             if len(sk["dynamic_lines"]) > len(shown):
                 print(f"    … +{len(sk['dynamic_lines']) - len(shown)} more")
-        facts.update(sys_repr=bc_note, sys_median=int(statistics.median(sizes)),
-                     sys_distinct=sk["distinct"])
+        facts.update(
+            sys_repr=bc_note, sys_median=int(statistics.median(sizes)), sys_distinct=sk["distinct"]
+        )
     else:
         print("- (no system field captured)")
         facts.update(sys_repr="n/a", sys_median=0, sys_distinct=0)
@@ -186,8 +195,11 @@ def analyze_agent(agent, recs, max_slots):
         print(f"- names          : {', '.join(sorted(union))}")
         if sometimes:
             print(f"- varying tools  : {', '.join(sorted(sometimes))}")
-        facts.update(tool_count=int(statistics.median(len(nl) for nl in name_lists)),
-                     tool_key=key, tool_container="top-level `tools`")
+        facts.update(
+            tool_count=int(statistics.median(len(nl) for nl in name_lists)),
+            tool_key=key,
+            tool_container="top-level `tools`",
+        )
     else:
         print("- (no tools captured)")
         facts.update(tool_count=0, tool_key="n/a", tool_container="n/a")
@@ -231,11 +243,16 @@ def cross_agent(all_facts):
 
 def main():
     ap = argparse.ArgumentParser(description="Analyze Interlude JSONL captures.")
-    ap.add_argument("paths", nargs="*", default=[".interlude/log-*.jsonl"],
-                    help="JSONL files or globs (default: .interlude/log-*.jsonl)")
+    ap.add_argument(
+        "paths",
+        nargs="*",
+        default=[".interlude/log-*.jsonl"],
+        help="JSONL files or globs (default: .interlude/log-*.jsonl)",
+    )
     ap.add_argument("--agent", help="only analyze this agent label")
-    ap.add_argument("--max-slots", type=int, default=15,
-                    help="max dynamic-slot lines to print per agent")
+    ap.add_argument(
+        "--max-slots", type=int, default=15, help="max dynamic-slot lines to print per agent"
+    )
     args = ap.parse_args()
 
     files = sorted({f for p in args.paths for f in glob.glob(p)})
@@ -257,14 +274,15 @@ def main():
 
     by_agent = defaultdict(list)
     for r in recs:
-        if (r.get("extract") is not None
-                and (not args.agent or r.get("agent") == args.agent)):
+        if r.get("extract") is not None and (not args.agent or r.get("agent") == args.agent):
             by_agent[r.get("agent", "?")].append(r)
 
     print("# Interlude prompt-architecture report")
     print(f"sources: {len(files)} file(s), {len(recs)} record(s)")
-    print("agents : " + ", ".join(f"{a} ({len(v)} analyzable req)"
-                                   for a, v in sorted(by_agent.items())))
+    print(
+        "agents : "
+        + ", ".join(f"{a} ({len(v)} analyzable req)" for a, v in sorted(by_agent.items()))
+    )
 
     facts = [analyze_agent(a, v, args.max_slots) for a, v in sorted(by_agent.items())]
     cross_agent(facts)
