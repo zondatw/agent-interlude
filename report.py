@@ -45,6 +45,110 @@ _CACHE = {}  # path -> (mtime, [records])
 _CACHE_LOCK = threading.Lock()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL PRICING TABLE (issue #13) — UPDATE THIS WHEN PROVIDERS CHANGE PRICES
+# ─────────────────────────────────────────────────────────────────────────────
+# Public list-price snapshot (USD per 1M tokens). The keys are *prefixes* that
+# match the start of a model id; longest match wins. Date-stamped versions
+# (e.g. "claude-sonnet-4-5-20250929") are normalized by stripping a trailing
+# "-YYYYMMDD" or "-vN" before lookup.
+#
+# Source: each provider's public pricing page. Snapshot taken 2026-05. If you
+# see a cost that looks off, refresh from:
+#   - https://www.anthropic.com/pricing
+#   - https://platform.openai.com/docs/pricing
+#
+# Fields:
+#   input         — per 1M tokens of prompt that is NOT a cache read
+#   output        — per 1M tokens of generated output
+#   cached_input  — per 1M tokens served from the prompt cache (much cheaper)
+#
+# Unknown models intentionally return None from estimate_cost_usd() rather
+# than guessing — never fabricate a number the user might trust.
+MODEL_PRICING = {
+    # Anthropic Claude
+    "claude-opus-4": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    "claude-sonnet-4": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    "claude-haiku-4": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
+    "claude-3-5-sonnet": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    "claude-3-5-haiku": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
+    "claude-3-opus": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    # OpenAI (Codex)
+    "gpt-5.5": {"input": 2.00, "output": 15.00, "cached_input": 0.20},
+    "gpt-5.4": {"input": 1.50, "output": 12.00, "cached_input": 0.15},
+    "gpt-5": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+    "gpt-4.1": {"input": 2.50, "output": 10.00, "cached_input": 0.25},
+    "gpt-4o": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
+    "o3-mini": {"input": 1.10, "output": 4.40, "cached_input": 0.55},
+}
+
+
+def _normalize_model(model_id):
+    """Strip date / version suffix and return a key for MODEL_PRICING lookup.
+    Longest-prefix match handles cases like `claude-sonnet-4-5` vs
+    `claude-sonnet-4` cleanly. Returns None when no match exists so the
+    caller can render `—` rather than guess a price."""
+    if not model_id or not isinstance(model_id, str):
+        return None
+    # Strip a trailing -YYYYMMDD or -vN if present
+    base = re.sub(r"-(?:\d{8}|v\d+)$", "", model_id.lower())
+    # Longest-prefix match against the pricing table
+    matches = [k for k in MODEL_PRICING if base.startswith(k)]
+    if not matches:
+        return None
+    return max(matches, key=len)
+
+
+def estimate_cost_usd(model_id, tokens_in, tokens_out, tokens_cached):
+    """Return a small dict {actual, no_cache, savings, model_key} of USD costs
+    for one exchange's usage, or None if the model isn't in MODEL_PRICING.
+
+    Field model (see _usage_cells): `tokens_in` = uncached input tokens,
+    `tokens_cached` = cache-READ input tokens. They are SEPARATE counts —
+    the total "input ever sent" is tokens_in + tokens_cached. We don't
+    currently distinguish cache-creation tokens (Anthropic bills those at
+    1.25x input), so this is a slight under-estimate when fresh cache
+    writes happen — acceptable for a "burn rate" view.
+
+      actual   — what the provider actually billed (cache-aware)
+      no_cache — what the same prompt would have cost without any cache
+      savings  — no_cache - actual (always ≥ 0)
+    """
+    key = _normalize_model(model_id)
+    if key is None:
+        return None
+    p = MODEL_PRICING[key]
+    tin = int(tokens_in or 0)
+    tout = int(tokens_out or 0)
+    tc = int(tokens_cached or 0)
+    actual = (
+        tin / 1_000_000 * p["input"]
+        + tc / 1_000_000 * p["cached_input"]
+        + tout / 1_000_000 * p["output"]
+    )
+    # Counterfactual: every input token billed at full uncached rate.
+    no_cache = (tin + tc) / 1_000_000 * p["input"] + tout / 1_000_000 * p["output"]
+    return {
+        "actual": actual,
+        "no_cache": no_cache,
+        "savings": max(0.0, no_cache - actual),
+        "model_key": key,
+    }
+
+
+def _fmt_usd(amount):
+    """Compact USD formatter that doesn't lose meaningful precision on tiny
+    values — common case is sub-cent per exchange."""
+    if amount is None:
+        return "—"
+    if amount >= 1.0:
+        return f"${amount:,.2f}"
+    if amount >= 0.01:
+        return f"${amount:.3f}"
+    return f"${amount:.5f}"
+
+
 def load_records(glob_pattern):
     """Return (sorted file paths, flat record list). Reuse parsed records when
     a file's mtime is unchanged. Pre-Phase-4 records get a synthesized stable
@@ -907,6 +1011,12 @@ def model_timeline(ctx):
                 "tokens_in": i_tok,
                 "tokens_out": o_tok,
                 "tokens_cached": cached,
+                "cost_usd_estimate": estimate_cost_usd(
+                    rc.get("model") or (r.get("request") or {}).get("model"),
+                    i_tok,
+                    o_tok,
+                    cached,
+                ),
                 "event_count": resp.get("event_count") if resp else None,
                 "text_preview": (text[:80] + ("…" if len(text) > 80 else ""))
                 if isinstance(text, str)
@@ -945,6 +1055,10 @@ def model_timeline(ctx):
                         "tokens_in": 0,
                         "tokens_out": 0,
                         "tokens_cached": 0,
+                        "cost_actual": 0.0,
+                        "cost_no_cache": 0.0,
+                        "cost_savings": 0.0,
+                        "cost_has_unpriced": False,
                     }
                 )
             s = sessions[-1]
@@ -959,6 +1073,17 @@ def model_timeline(ctx):
                     v = ev.get(k)
                     if isinstance(v, int):
                         s[k] += v
+                # Cost rollup. Exchanges with no usage data or an unknown
+                # model contribute nothing to the totals but flip the
+                # has_unpriced flag so the UI can show a "~" qualifier.
+                ce = ev.get("cost_usd_estimate")
+                if ce:
+                    s["cost_actual"] += ce["actual"]
+                    s["cost_no_cache"] += ce["no_cache"]
+                    s["cost_savings"] += ce["savings"]
+                elif ev.get("tokens_in") or ev.get("tokens_out"):
+                    # Real usage but model not in pricing table → unpriced
+                    s["cost_has_unpriced"] = True
             in_dt = _parse_ts(ev["ts"])
             if in_dt:
                 last_in_dt = in_dt
@@ -1185,7 +1310,35 @@ def model_timeline(ctx):
         "exchanges": exchanges,
         "event_count": len(events),
         "events": events,
+        # Cost rollup over the filtered set (#13). Per-session breakdown is
+        # already on each session dict above; this is the global summary
+        # the renderer shows above the timeline.
+        "cost_total": {
+            "actual": sum(s["cost_actual"] for s in sessions),
+            "no_cache": sum(s["cost_no_cache"] for s in sessions),
+            "savings": sum(s["cost_savings"] for s in sessions),
+            "has_unpriced": any(s["cost_has_unpriced"] for s in sessions),
+            "by_model": _cost_by_model(events),
+        },
     }
+
+
+def _cost_by_model(events):
+    """Bucket cost by normalized model id across all events. Returns a list
+    sorted by descending cost so the top spender is first."""
+    buckets = {}
+    for ev in events:
+        if ev["dir"] != "in":
+            continue
+        ce = ev.get("cost_usd_estimate")
+        if not ce:
+            continue
+        k = ce["model_key"]
+        b = buckets.setdefault(k, {"model_key": k, "actual": 0.0, "savings": 0.0, "calls": 0})
+        b["actual"] += ce["actual"]
+        b["savings"] += ce["savings"]
+        b["calls"] += 1
+    return sorted(buckets.values(), key=lambda b: b["actual"], reverse=True)
 
 
 # =============================================================================
@@ -1681,6 +1834,37 @@ tr:hover td { background: #fafafa; }
 .seq-msg-body h4 { margin-top: 0.9em; margin-bottom: 0.2em; }
 .seq-msg-body h4:first-child { margin-top: 0; }
 
+/* === cost estimation (#13) === */
+.cost-panel {
+  margin: 0.8em 0;
+  padding: 0.7em 0.9em;
+  background: #f7faf3;
+  border: 1px solid #d8e6c8;
+  border-radius: 4px;
+}
+.cost-title { margin-bottom: 0.25em; font-size: 0.78em; }
+.cost-headline { font-size: 0.95em; }
+.cost-actual { font-weight: 700; color: #2a5d34; font-size: 1.05em; }
+.cost-counterfact { font-size: 0.85em; }
+.cost-savings { color: #2a5d34; font-weight: 500; }
+.cost-unpriced { color: #b58105; font-weight: 700; margin-right: 0.1em; }
+.cost-by-model {
+  margin: 0.6em 0 0; width: auto; min-width: 24em;
+}
+.cost-by-model th, .cost-by-model td {
+  padding: 0.25em 0.7em; font-size: 0.84em;
+}
+.cost-by-model th { background: #eef4e3; }
+
+/* Per-session cost chip in the seq-session header */
+.seq-session-cost { margin-left: 0.6em; font-size: 0.85em; }
+.cost-chip {
+  display: inline-block; padding: 0.1em 0.55em;
+  background: #eef4e3; color: #2a5d34;
+  border-radius: 3px; font-weight: 600;
+  font-family: ui-monospace, monospace;
+}
+
 /* === live tail pill (#12) === */
 .live-pill {
   position: fixed; top: 1em; right: 1em;
@@ -1996,6 +2180,79 @@ def _render_tokens_chart(tokens_series):
         f"<span>{esc(start_lbl)}</span><span>{esc(end_lbl)}</span>"
         f"</div>"
         f"</div>"
+    )
+
+
+def _render_cost_summary(cost_total):
+    """Top-of-timeline cost panel (#13). Three numbers: actual billed,
+    counterfactual without-cache cost, and the savings. Per-model breakdown
+    below so the user sees which model is eating their budget."""
+    actual = cost_total.get("actual", 0.0)
+    no_cache = cost_total.get("no_cache", 0.0)
+    savings = cost_total.get("savings", 0.0)
+    unpriced = cost_total.get("has_unpriced", False)
+    by_model = cost_total.get("by_model", [])
+    if actual == 0.0 and not by_model and not unpriced:
+        return ""  # nothing to bill, nothing to show
+
+    qualifier = (
+        "<span class='cost-unpriced' title='some exchanges used a model not in "
+        "MODEL_PRICING — totals are a lower bound'>~</span>"
+        if unpriced
+        else ""
+    )
+    pct_saved = (savings / no_cache * 100) if no_cache > 0 else 0.0
+    rows = []
+    for b in by_model[:6]:
+        rows.append(
+            f"<tr>"
+            f"<td><code>{esc(b['model_key'])}</code></td>"
+            f"<td>{b['calls']}</td>"
+            f"<td>{esc(_fmt_usd(b['actual']))}</td>"
+            f"<td class='cost-savings'>"
+            f"−{esc(_fmt_usd(b['savings']))}</td>"
+            f"</tr>"
+        )
+    rows_html = (
+        "<table class='cost-by-model'>"
+        "<tr><th>model</th><th>calls</th><th>billed</th><th>saved by cache</th></tr>"
+        + "".join(rows)
+        + "</table>"
+        if rows
+        else ""
+    )
+    return (
+        f"<div class='cost-panel'>"
+        f"<div class='cost-title muted'>cost (estimate · USD)</div>"
+        f"<div class='cost-headline'>"
+        f"<span class='cost-actual'>{qualifier}{esc(_fmt_usd(actual))}</span>"
+        f"<span class='muted'> billed</span> · "
+        f"<span class='cost-counterfact muted'>"
+        f"would be {esc(_fmt_usd(no_cache))} without cache</span> · "
+        f"<span class='cost-savings'>−{esc(_fmt_usd(savings))} "
+        f"({pct_saved:.0f}% saved)</span>"
+        f"</div>"
+        f"{rows_html}"
+        f"</div>"
+    )
+
+
+def _render_session_cost(s):
+    """Per-session cost chip embedded in the session header. Tiny because
+    the header is already wide."""
+    actual = s.get("cost_actual", 0.0)
+    savings = s.get("cost_savings", 0.0)
+    has_unpriced = s.get("cost_has_unpriced", False)
+    if actual == 0.0 and not has_unpriced:
+        return ""
+    qualifier = "~" if has_unpriced else ""
+    saved_part = (
+        f" <span class='cost-savings'>(−{esc(_fmt_usd(savings))})</span>" if savings > 0 else ""
+    )
+    return (
+        f"<span class='cost-chip' title='estimated billable cost for this "
+        f"session; parentheses = saved by prompt cache'>"
+        f"{esc(qualifier + _fmt_usd(actual))}{saved_part}</span>"
     )
 
 
@@ -2881,6 +3138,10 @@ def render_timeline(m, ctx=None):
             )
         body.append("</div>")
 
+    # --- Cost estimate summary (#13) — pinned near the top so the headline
+    # "this week I burned $X" answers the issue's primary scenario.
+    body.append(_render_cost_summary(m["cost_total"]))
+
     # --- Stop reason breakdown + repeat-block summary (issues #9, #10) -----
     body.append(_render_stop_reasons(m["stop_reasons"]))
     body.append(_render_repeats_summary(m["repeats_summary"], form))
@@ -3019,6 +3280,9 @@ def render_timeline(m, ctx=None):
                     f"agents: {esc(agents_lbl)} · "
                     f"{s['tokens_in']:,} in / {s['tokens_out']:,} out / "
                     f"{s['tokens_cached']:,} cached"
+                    f"</span>"
+                    f"<span class='seq-session-cost'>"
+                    f"{_render_session_cost(s)}"
                     f"</span>"
                     f"<a class='seq-session-link' href='{esc(filter_href)}'>"
                     f"filter to this session →</a>"
