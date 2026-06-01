@@ -38,27 +38,44 @@ to check the whole tree at once.
 ## Quick start
 
 ```bash
-# 1. Start the proxy (three listeners)
+# 1. One command: starts the 3 proxy listeners AND the web UI on :8000
 uv run proxy.py
 
 # 2. In another terminal, point Claude Code at it
 ANTHROPIC_BASE_URL=http://localhost:8788 claude
 
-# 3. Analyze what was recorded
-uv run analyze.py
+# 3. Open the live browser UI as captures stream in
+open http://127.0.0.1:8000/timeline
 ```
 
-On startup the proxy prints:
+On startup the bundled launcher prints:
 
 ```
 [interlude] claude: http://127.0.0.1:8788 -> https://api.anthropic.com
 [interlude] codex:  http://127.0.0.1:8789 -> https://api.openai.com   (Codex + API key)
 [interlude] codex:  http://127.0.0.1:8790 -> https://chatgpt.com      (Codex + ChatGPT login)
 [interlude] logging to .interlude/log-<timestamp>.jsonl
+[interlude] web UI: http://127.0.0.1:8000/timeline (auto-started; disable with --no-ui)
+[interlude-report] http://127.0.0.1:8000
+[interlude-report] watching .interlude/log-*.jsonl
+[interlude-report] auto-reload on (disable with --no-reload)
 ```
 
+The web UI runs in a child process. If you edit `report.py` or `analyze.py`,
+the UI re-execs itself in place — the proxy keeps running and your live SSE
+streams stay intact. `Ctrl-C` on the proxy tears down both.
+
 Each launch opens a fresh log file; every request prints one line such as
-`[claude] POST /v1/messages`; `Ctrl-C` stops the proxy.
+`[claude] POST /v1/messages`.
+
+Variants:
+
+```bash
+uv run proxy.py --no-ui            # proxy-only (e.g. CI / headless capture)
+uv run proxy.py --ui-port 9000     # bind the UI on a different port
+uv run report.py serve             # UI only, against existing logs
+uv run analyze.py                  # text report, no server
+```
 
 ## Pointing an agent at the proxy
 
