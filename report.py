@@ -1721,6 +1721,23 @@ tr:hover td { background: #fafafa; }
 .seq-live-only { /* placeholder container when timeline starts empty */
   margin-top: 1em;
 }
+/* Dedicated zone for live-appended rows — sits as a sibling AFTER all
+   historical session/thread groups so live captures don't visually
+   attach themselves to the wrong session. */
+.seq-live-zone {
+  margin-top: 1.2em;
+  border-top: 2px dashed #f0b400;
+  padding-top: 0.6em;
+}
+.seq-live-zone-header {
+  margin: 0 0 0.5em;
+  padding: 0.3em 0.6em;
+  background: #fffaef;
+  border-left: 3px solid #f0b400;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+.seq-live-zone-label { font-weight: 600; color: #8b6500; }
 
 /* === overview CTA === */
 .ov-cta { display: inline-block; padding: 0.4em 0.9em; margin: 0.4em 0;
@@ -3276,14 +3293,26 @@ def _live_tail_html():
       '</div></details>' +
       '<span class="seq-lane-r-cell">' + (rec.kind !== 'request' ? agentChip : '') + '</span>';
 
-    // Append to last seq-events list; create a live-only container if none.
-    var lastOl = seqDiv.querySelector('ol.seq-events:last-of-type');
-    if (!lastOl) {
-      lastOl = document.createElement('ol');
-      lastOl.className = 'seq-events';
-      seqDiv.appendChild(lastOl);
+    // Append to the dedicated live zone — a sibling at the BOTTOM of
+    // .seq, OUTSIDE any historical session/thread <details> wrapper.
+    // Appending inside the last session's <ol> made the new row look
+    // like it belonged to that old session (wrong both visually and
+    // semantically — sessions are gap-based and the new event would
+    // usually start its own).
+    var liveZone = document.getElementById('seq-live-zone');
+    if (!liveZone) {
+      liveZone = document.createElement('div');
+      liveZone.id = 'seq-live-zone';
+      liveZone.className = 'seq-live-zone';
+      liveZone.innerHTML =
+        '<div class="seq-live-zone-header">' +
+          '<span class="seq-live-zone-label">↓ Live captures since page load</span> ' +
+          '<span class="muted">— click the pill to refresh for proper session grouping</span>' +
+        '</div>' +
+        '<ol class="seq-events" id="seq-live-events"></ol>';
+      seqDiv.appendChild(liveZone);
     }
-    lastOl.appendChild(li);
+    document.getElementById('seq-live-events').appendChild(li);
 
     // Auto-scroll: only when the user is already near the bottom (like
     // Discord/Slack). Avoids yanking the page if they're reading
