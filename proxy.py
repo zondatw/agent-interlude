@@ -13,10 +13,13 @@ teed into a buffer and reassembled after the stream ends. We strip the request's
 accept-encoding so the captured bytes are always plaintext (no gzip/br to decode).
 """
 
+import argparse
 import http.client
 import http.server
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -424,8 +427,59 @@ def make_handler(upstream_host, agent_label):
     return Handler
 
 
+def _spawn_ui(port, logs_glob):
+    """Spawn `report.py serve` as a child process so the user gets capture +
+    web UI from one command. The child runs in its own Python process, so
+    its own auto-reload watcher can re-exec on report.py edits WITHOUT
+    touching the proxy — keeping live SSE streams intact.
+
+    Returns the Popen handle. Child stdout is piped through a daemon thread
+    that re-prints each line with a `[ui]` prefix so proxy and UI logs
+    interleave readably in one terminal."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report.py")
+    proc = subprocess.Popen(
+        [sys.executable, script, "serve", "--port", str(port), "--logs", logs_glob],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+    )
+
+    def _pump():
+        # report.py prints its own `[interlude-report] ...` banner; just
+        # re-stream those lines verbatim. If the child dies, the loop exits
+        # naturally and the supervisor in main() notices via poll().
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    threading.Thread(target=_pump, daemon=True, name="ui-stdout-pump").start()
+    return proc
+
+
 def main():
     global LOG_PATH
+
+    ap = argparse.ArgumentParser(description="Interlude — agent <-> API capture proxy + web UI.")
+    ap.add_argument(
+        "--no-ui",
+        action="store_true",
+        help="don't auto-start the report.py web UI (proxy-only mode)",
+    )
+    ap.add_argument(
+        "--ui-port",
+        type=int,
+        default=8000,
+        help="port for the bundled web UI (default: 8000)",
+    )
+    ap.add_argument(
+        "--logs-glob",
+        default=None,
+        help=f"JSONL glob passed to the web UI (default: {LOG_DIR}/log-*.jsonl)",
+    )
+    args = ap.parse_args()
+
     os.makedirs(LOG_DIR, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     LOG_PATH = os.path.join(LOG_DIR, f"log-{stamp}.jsonl")
@@ -437,16 +491,36 @@ def main():
         servers.append(httpd)
         print(f"[interlude] {label}: http://127.0.0.1:{port} -> https://{host}", flush=True)
     print(f"[interlude] logging to {LOG_PATH}", flush=True)
-    print(
-        "[interlude] web UI:  uv run report.py serve  ->  " "http://127.0.0.1:8000/timeline",
-        flush=True,
-    )
+
+    ui_proc = None
+    if not args.no_ui:
+        logs_glob = args.logs_glob or f"{LOG_DIR}/log-*.jsonl"
+        ui_proc = _spawn_ui(args.ui_port, logs_glob)
+        print(
+            f"[interlude] web UI: http://127.0.0.1:{args.ui_port}/timeline "
+            f"(auto-started; disable with --no-ui)",
+            flush=True,
+        )
 
     try:
         while True:
             time.sleep(1)
+            if ui_proc is not None and ui_proc.poll() is not None:
+                # Child died on its own (crash, manual kill, port collision).
+                # Surface the exit code and stop supervising; proxy keeps going.
+                print(
+                    f"[interlude] web UI exited with code {ui_proc.returncode}",
+                    flush=True,
+                )
+                ui_proc = None
     except KeyboardInterrupt:
         print("\n[interlude] shutting down", flush=True)
+        if ui_proc is not None and ui_proc.poll() is None:
+            ui_proc.terminate()
+            try:
+                ui_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                ui_proc.kill()
         for s in servers:
             s.shutdown()
 
