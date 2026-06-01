@@ -1705,11 +1705,21 @@ tr:hover td { background: #fafafa; }
 }
 .live-count:empty { display: none; }
 .live-count:hover { text-decoration: underline; }
-/* Newly appended rows briefly pulse so the eye catches them */
-.seq-event-live { animation: live-flash 1.5s ease-out; }
+/* Newly appended rows pulse for 3s with a yellow background + left border
+   so the eye catches them even on a long timeline; the border lingers
+   for an extra second after the background fades. */
+.seq-event-live {
+  animation: live-flash 3s ease-out;
+  border-left: 3px solid #f0b400;
+  padding-left: 0.4em;
+}
 @keyframes live-flash {
   0%   { background: #fff3a3; }
+  60%  { background: #fff3a3; }
   100% { background: transparent; }
+}
+.seq-live-only { /* placeholder container when timeline starts empty */
+  margin-top: 1em;
 }
 
 /* === overview CTA === */
@@ -3196,8 +3206,16 @@ def _live_tail_html():
 </div>
 <script>
 (function() {
+  // The pill is useful even with zero captures so the user can see WHEN the
+  // first request lands. If `.seq` is missing (empty timeline), we create
+  // an empty placeholder so appendRecord still has somewhere to push to.
   var seqDiv = document.querySelector('.seq');
-  if (!seqDiv) return;
+  if (!seqDiv) {
+    seqDiv = document.createElement('div');
+    seqDiv.className = 'seq seq-live-only';
+    var emptyMsg = document.querySelector('p.muted');
+    (emptyMsg ? emptyMsg.parentNode : document.body).appendChild(seqDiv);
+  }
   var pill = document.getElementById('live-pill');
   pill.hidden = false;
   var statusEl = pill.querySelector('.live-status');
@@ -3266,6 +3284,16 @@ def _live_tail_html():
       seqDiv.appendChild(lastOl);
     }
     lastOl.appendChild(li);
+
+    // Auto-scroll: only when the user is already near the bottom (like
+    // Discord/Slack). Avoids yanking the page if they're reading
+    // historical events further up.
+    var nearBottom =
+      (window.innerHeight + window.scrollY) >=
+      (document.body.scrollHeight - 200);
+    if (nearBottom) {
+      li.scrollIntoView({block: 'end', behavior: 'smooth'});
+    }
   }
 
   function connect() {
@@ -3427,6 +3455,13 @@ def make_handler(logs_glob):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            # Force fresh: this is a dev-only UI where the data updates every
+            # second and the JS/CSS ships inline. Browser heuristic caching
+            # of /timeline kept showing stale HTML after pulling new code,
+            # which made the live-tail look broken until a hard refresh.
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(body)
 
