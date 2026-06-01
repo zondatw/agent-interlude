@@ -695,6 +695,99 @@ def model_diff(ctx):
     }
 
 
+def model_graph(ctx):
+    """Per-session conversation graph data. Calls model_timeline with empty
+    filters to reuse its session / thread / repeat / tool-invocation
+    detection, then projects ONE session into a sequence of nodes and edges
+    suitable for SVG rendering. The picker state handles the no-param case
+    by listing every session available."""
+    session_param = (ctx["qs"].get("session") or [""])[0].strip()
+
+    # Reuse the heavy lifting in model_timeline by calling it with a clean
+    # query string (so no filters narrow the data). This keeps session /
+    # thread / repeat detection in one place.
+    inner_ctx = {**ctx, "qs": {}}
+    tl = model_timeline(inner_ctx)
+
+    if not session_param:
+        return {"state": "picker", "sessions": tl["sessions"]}
+    try:
+        # URL convention: 1-based display index (matches "Session #1" labels).
+        # Internal session id is 0-based, so subtract 1 here.
+        sid = int(session_param) - 1
+    except (TypeError, ValueError):
+        return {"state": "picker", "sessions": tl["sessions"]}
+
+    session = next((s for s in tl["sessions"] if s["id"] == sid), None)
+    if not session:
+        return {
+            "state": "not_found",
+            "session_id": sid,
+            "available": [s["id"] for s in tl["sessions"]],
+        }
+
+    # Project the events for THIS session into nodes
+    in_by_id = {e["id"]: e for e in tl["events"] if e["dir"] == "in"}
+    nodes = []
+    for ev in tl["events"]:
+        if ev["dir"] != "out" or ev.get("session_id") != sid:
+            continue
+        in_ev = in_by_id.get(ev["id"], {})
+        nodes.append(
+            {
+                "id": ev["id"],
+                "ts": ev["ts"],
+                "agent": ev["agent"],
+                "wire": ev["wire"],
+                "method": ev["method"],
+                "path": ev["path"],
+                "upstream": ev.get("upstream"),
+                "msg_count": ev.get("msg_count"),
+                "tool_count": ev.get("tool_count"),
+                "status": in_ev.get("status"),
+                "model": in_ev.get("model"),
+                "tokens_in": in_ev.get("tokens_in"),
+                "tokens_out": in_ev.get("tokens_out"),
+                "tokens_cached": in_ev.get("tokens_cached"),
+                "rtt_s": in_ev.get("gap_s"),
+                "stop_reason": _extract_stop_reason(ctx["responses"].get(ev["id"])),
+                "tools_invoked": in_ev.get("tools_invoked") or [],
+                "thread_id": ev.get("thread_id"),
+                "repeat_run_id": ev.get("repeat_run_id"),
+                "repeat_index": ev.get("repeat_index"),
+                "repeat_count": ev.get("repeat_count"),
+            }
+        )
+
+    edges = []
+    for a, b in zip(nodes, nodes[1:]):
+        if (
+            a.get("repeat_run_id") is not None
+            and a["repeat_run_id"] == b["repeat_run_id"]
+            and (a.get("repeat_count") or 1) >= 2
+        ):
+            kind = "retry"
+        elif a.get("thread_id") is not None and a["thread_id"] == b["thread_id"]:
+            kind = "continuation"
+        else:
+            kind = "next"
+        edges.append(
+            {
+                "from": a["id"],
+                "to": b["id"],
+                "kind": kind,
+                "tools_at_from": [t.get("name") for t in (a.get("tools_invoked") or [])],
+            }
+        )
+
+    return {
+        "state": "ok",
+        "session": session,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 def model_timeline(ctx):
     """Chronological flow of exchanges as a sequence-diagram event list.
     Each captured exchange becomes TWO events: an outbound 'out' (the request
@@ -1591,6 +1684,60 @@ tr:hover td { background: #fafafa; }
           border-radius: 4px; background: #06c; color: #fff;
           text-decoration: none; font-weight: 500; }
 .ov-cta:hover { background: #048; }
+
+/* === conversation graph (SVG, per session) === */
+.graph-picker { padding-left: 1.2em; }
+.graph-picker li { margin: 0.45em 0; }
+.graph-picker a { color: #06c; text-decoration: none; font-weight: 500; }
+.graph-picker a:hover { text-decoration: underline; }
+
+.graph-legend {
+  display: flex; gap: 0.7em; flex-wrap: wrap;
+  margin: 0.6em 0 1em; font-size: 0.82em;
+}
+.graph-legend-key {
+  display: inline-block; padding: 0.15em 0.55em;
+  border-radius: 3px; background: #f1f3f5; border: 1px solid #e3e6ea;
+}
+.graph-edge-next-key { border-left: 3px solid #888; }
+.graph-edge-continuation-key { border-left: 3px solid #3a78c8; }
+.graph-edge-retry-key { border-left: 3px solid #c33; }
+
+.graph-svg {
+  display: block; max-width: 100%; height: auto;
+  margin: 1em 0; background: #fafbfc;
+  border: 1px solid #eaecef; border-radius: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* node rectangles */
+.graph-node rect {
+  fill: #fff; stroke: #ccc; stroke-width: 1;
+}
+.graph-node:hover rect { stroke: #06c; stroke-width: 1.5; }
+.graph-node-claude rect { fill: #fff7f0; stroke: #d8a06a; }
+.graph-node-codex  rect { fill: #f1f7ff; stroke: #6a9ad8; }
+
+/* node text */
+.graph-node text { font-size: 12px; fill: #222; }
+.graph-node-ts   { fill: #555; font-size: 11px; }
+.graph-node-path { font-weight: 600; }
+.graph-node-meta { fill: #666; font-size: 11px; }
+.graph-status-ok  { fill: #185; font-weight: 600; }
+.graph-status-err { fill: #c33; font-weight: 600; }
+.graph-node .muted { fill: #888; }
+
+.graph-repeat-warn { fill: #b58105; font-size: 11px; font-weight: 600; }
+.graph-repeat-bad  { fill: #c33;    font-size: 11px; font-weight: 700; }
+
+/* edges */
+.graph-edge { stroke: #888; stroke-width: 1.5; fill: none; }
+.graph-edge-next         { stroke: #888; }
+.graph-edge-continuation { stroke: #3a78c8; stroke-width: 2; }
+.graph-edge-retry        { stroke: #c33; stroke-width: 2; stroke-dasharray: 5,3; }
+.graph-edge-label              { font-size: 11px; fill: #666; }
+.graph-edge-label-continuation { fill: #3a78c8; }
+.graph-edge-label-retry        { fill: #c33; font-weight: 600; }
 """
 
 
@@ -1608,6 +1755,7 @@ def _nav(json_url=None):
         f'<nav class="nav">'
         f'<a href="/">Overview</a>'
         f'<a href="/timeline">Timeline</a>'
+        f'<a href="/graph">Graph</a>'
         f'<a href="/requests">Requests</a>'
         f'<a href="/diff">Diff</a>'
         f"{api}"
@@ -2335,6 +2483,238 @@ def render_diff(m, ctx=None):
     return page(f"Diff {a['id']} vs {b['id']}", "".join(body), json_url=json_url)
 
 
+def render_graph(m, ctx=None):
+    """Conversation graph: one session rendered as a vertical chain of
+    request/response nodes with edges labeled by the relationship between
+    consecutive turns (retry / continuation / next).
+
+    State machine:
+      - 'picker'    : no ?session= → list every session as a link
+      - 'not_found' : ?session=N where N has no events → explain + back
+      - 'ok'        : draw an SVG
+    """
+    sid = m.get("session", {}).get("id") if m.get("session") else None
+    json_url = f"/api/graph?session={sid + 1}" if sid is not None else "/api/graph"
+
+    if m["state"] == "picker":
+        items = []
+        for s in m["sessions"]:
+            try:
+                start_dt = _parse_ts(s["start_ts"])
+                end_dt = _parse_ts(s["end_ts"])
+                dur = (
+                    _fmt_gap((end_dt - start_dt).total_seconds()).lstrip("+")
+                    if start_dt and end_dt and end_dt >= start_dt
+                    else "—"
+                )
+            except Exception:
+                dur = "—"
+            agents_lbl = ", ".join(s["agents"]) if s["agents"] else "?"
+            items.append(
+                f"<li><a href='/graph?session={s['id'] + 1}'>"
+                f"Session #{s['id'] + 1}</a> "
+                f"<span class='muted'>"
+                f"<code>{esc(s['start_ts'])}</code> → "
+                f"<code>{esc(s['end_ts'])}</code> "
+                f"({esc(dur)}) · {s['exchange_count']} exchange(s) · "
+                f"agents: {esc(agents_lbl)}</span></li>"
+            )
+        body = [
+            "<h1>Conversation graph</h1>",
+            "<p class='muted'>Pick a session to visualize. Each session is "
+            "rendered as a vertical chain of request/response nodes; edges "
+            "show whether consecutive turns are continuations of a thread, "
+            "retries of the same prompt, or unrelated next steps.</p>",
+            "<ol class='graph-picker'>",
+            "".join(items) if items else "<li class='muted'>(no sessions)</li>",
+            "</ol>",
+        ]
+        return page("Graph", "".join(body), json_url=json_url)
+
+    if m["state"] == "not_found":
+        body = [
+            f"<h1>Graph — session #{esc(m['session_id'] + 1)} not found</h1>",
+            "<p class='status-err'>No session with that id in the current " "log set.</p>",
+            "<p><a href='/graph'>← pick a session</a></p>",
+        ]
+        return page("Graph (not found)", "".join(body), json_url=json_url)
+
+    # state == "ok"
+    s = m["session"]
+    nodes = m["nodes"]
+    edges = m["edges"]
+
+    # ---- layout ----
+    NW, NH = 360, 84
+    GAP = 64
+    PAD_X, PAD_Y = 30, 25
+    W = NW + PAD_X * 2 + 220  # extra room for edge labels on the right
+    H = max(NH + PAD_Y * 2, len(nodes) * (NH + GAP) - GAP + PAD_Y * 2)
+    node_x = PAD_X
+
+    def node_y(i):
+        return PAD_Y + i * (NH + GAP)
+
+    # Arrow marker definitions (one per edge kind so we can color the arrowhead)
+    defs = (
+        "<defs>"
+        "<marker id='arrow-next' viewBox='0 0 10 10' refX='9' refY='5' "
+        "markerWidth='6' markerHeight='6' orient='auto-start-reverse'>"
+        "<path d='M0,0 L10,5 L0,10 Z' fill='#888'/></marker>"
+        "<marker id='arrow-continuation' viewBox='0 0 10 10' refX='9' refY='5' "
+        "markerWidth='6' markerHeight='6' orient='auto-start-reverse'>"
+        "<path d='M0,0 L10,5 L0,10 Z' fill='#3a78c8'/></marker>"
+        "<marker id='arrow-retry' viewBox='0 0 10 10' refX='9' refY='5' "
+        "markerWidth='6' markerHeight='6' orient='auto-start-reverse'>"
+        "<path d='M0,0 L10,5 L0,10 Z' fill='#c33'/></marker>"
+        "</defs>"
+    )
+
+    # ---- nodes ----
+    def _sr_icon(sr):
+        if not sr:
+            return ""
+        if sr == "end_turn":
+            return "✓"
+        if sr in ("tool_use", "tool_calls"):
+            return "🔧"
+        if sr == "max_tokens":
+            return "✂"
+        return "·"
+
+    node_svg = []
+    for i, n in enumerate(nodes):
+        y = node_y(i)
+        agent = n.get("agent") or "?"
+        status = n.get("status")
+        s_class = (
+            "graph-status-ok" if isinstance(status, int) and status < 400 else "graph-status-err"
+        )
+        status_str = str(status) if status is not None else "—"
+        sr = n.get("stop_reason") or ""
+        sr_icon = _sr_icon(sr)
+        rtt = _fmt_gap(n.get("rtt_s")).lstrip("+") if n.get("rtt_s") is not None else "—"
+
+        tokens_bits = []
+        for k, lbl in (
+            ("tokens_in", "in"),
+            ("tokens_out", "out"),
+            ("tokens_cached", "cached"),
+        ):
+            v = n.get(k)
+            if v is not None:
+                tokens_bits.append(f"{v} {lbl}")
+        tokens_str = " · ".join(tokens_bits) if tokens_bits else "—"
+
+        model_str = n.get("model") or "?"
+
+        # Repeat badge
+        rcount = n.get("repeat_count") or 1
+        repeat_badge = ""
+        if rcount >= 2:
+            cls = "graph-repeat-bad" if rcount >= 3 else "graph-repeat-warn"
+            ridx = (n.get("repeat_index") or 0) + 1
+            repeat_badge = (
+                f"<text x='{NW - 10:.1f}' y='18' text-anchor='end' "
+                f"class='{cls}'>↻ {ridx}/{rcount}</text>"
+            )
+
+        path_str = n.get("path") or ""
+        if len(path_str) > 42:
+            path_str = path_str[:39] + "…"
+
+        node_svg.append(
+            f"<a href='/requests/{esc(n['id'])}' target='_blank'>"
+            f"<g class='graph-node graph-node-{esc(agent)}' "
+            f"transform='translate({node_x},{y})'>"
+            f"<rect width='{NW}' height='{NH}' rx='6' ry='6'/>"
+            f"<text x='10' y='18' class='graph-node-ts'>{esc(n.get('ts') or '')}</text>"
+            f"{repeat_badge}"
+            f"<text x='10' y='38' class='graph-node-path'>"
+            f"{esc((n.get('method') or '').upper())} {esc(path_str)}</text>"
+            f"<text x='10' y='56' class='{s_class}'>"
+            f"{esc(status_str)} {esc(sr_icon)} "
+            f"<tspan class='muted'>{esc(sr)}</tspan></text>"
+            f"<text x='10' y='74' class='graph-node-meta'>"
+            f"{esc(model_str)} · {esc(tokens_str)} · RTT {esc(rtt)}</text>"
+            f"</g></a>"
+        )
+
+    # ---- edges ----
+    edge_svg = []
+    for i, e in enumerate(edges):
+        kind = e["kind"]
+        y1 = node_y(i) + NH
+        y2 = node_y(i + 1)
+        x_mid = node_x + NW / 2
+        edge_svg.append(
+            f"<line x1='{x_mid:.1f}' y1='{y1:.1f}' x2='{x_mid:.1f}' "
+            f"y2='{y2:.1f}' class='graph-edge graph-edge-{esc(kind)}' "
+            f"marker-end='url(#arrow-{esc(kind)})'/>"
+        )
+        # Label: kind + optional tool names invoked at the FROM node
+        tools = e.get("tools_at_from") or []
+        tool_part = (
+            " · " + ", ".join(t for t in tools[:3] if t) + ("…" if len(tools) > 3 else "")
+            if tools
+            else ""
+        )
+        label = f"{kind}{tool_part}"
+        edge_svg.append(
+            f"<text x='{x_mid + 14:.1f}' y='{(y1 + y2) / 2 + 4:.1f}' "
+            f"class='graph-edge-label graph-edge-label-{esc(kind)}'>"
+            f"{esc(label)}</text>"
+        )
+
+    # ---- header / legend ----
+    start_dt = _parse_ts(s["start_ts"])
+    end_dt = _parse_ts(s["end_ts"])
+    dur = (
+        _fmt_gap((end_dt - start_dt).total_seconds()).lstrip("+")
+        if start_dt and end_dt and end_dt >= start_dt
+        else "—"
+    )
+    agents_lbl = ", ".join(s["agents"]) if s["agents"] else "?"
+
+    header = (
+        f"<h1>Conversation graph · Session #{s['id'] + 1}</h1>"
+        f"<p class='muted'>"
+        f"<code>{esc(s['start_ts'])}</code> → "
+        f"<code>{esc(s['end_ts'])}</code> "
+        f"({esc(dur)}) · {len(nodes)} exchange(s) · "
+        f"agents: {esc(agents_lbl)} · "
+        f"{s['tokens_in']:,} tokens in / {s['tokens_out']:,} out / "
+        f"{s['tokens_cached']:,} cached"
+        f"</p>"
+        f"<p><a href='/graph'>← pick another session</a> · "
+        f"<a href='/timeline'>open in timeline →</a></p>"
+        f"<div class='graph-legend'>"
+        f"<span class='graph-legend-key graph-edge-next-key'>next</span>"
+        f"<span class='graph-legend-key graph-edge-continuation-key'>"
+        f"thread continuation</span>"
+        f"<span class='graph-legend-key graph-edge-retry-key'>retry</span>"
+        f"<span class='graph-legend-key muted'>✓ end_turn · "
+        f"🔧 tool_use · ✂ max_tokens</span>"
+        f"</div>"
+    )
+
+    if not nodes:
+        body = [
+            header,
+            "<p class='muted'>(this session has no recorded exchanges)</p>",
+        ]
+        return page("Graph", "".join(body), json_url=json_url)
+
+    svg = (
+        f"<svg class='graph-svg' viewBox='0 0 {W} {H}' "
+        f"preserveAspectRatio='xMinYMin meet' width='{W}'>"
+        f"{defs}{''.join(edge_svg)}{''.join(node_svg)}"
+        f"</svg>"
+    )
+
+    return page(f"Graph · Session #{s['id'] + 1}", header + svg, json_url=json_url)
+
+
 def render_timeline(m, ctx=None):
     """Sequence-diagram-style flow with two lanes (agent ↔ API). Each captured
     exchange becomes two arrows: out (request) and in (response). Clicking an
@@ -2582,6 +2962,9 @@ def render_timeline(m, ctx=None):
                     f"</span>"
                     f"<a class='seq-session-link' href='{esc(filter_href)}'>"
                     f"filter to this session →</a>"
+                    f"<a class='seq-session-link' "
+                    f"href='/graph?session={s['id'] + 1}'>"
+                    f"view as graph →</a>"
                     f"</summary>"
                 )
 
@@ -2766,6 +3149,7 @@ ROUTES = [
     # (regex,                                                model,          renderer)
     (re.compile(r"^/$"), model_overview, render_overview),
     (re.compile(r"^/timeline$"), model_timeline, render_timeline),
+    (re.compile(r"^/graph$"), model_graph, render_graph),
     (re.compile(r"^/requests$"), model_requests, render_requests),
     (re.compile(r"^/requests/(?P<xid>[0-9a-f]+)$"), model_request, render_request),
     (re.compile(r"^/skeleton/(?P<agent>[a-zA-Z0-9_-]+)$"), model_skeleton, render_skeleton),
