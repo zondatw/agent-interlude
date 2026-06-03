@@ -10,7 +10,7 @@
 #   git push                # ← this is the trigger
 #
 # After the workflow goes green, verify
-# https://pypi.org/project/interlude/. Optionally draft a GitHub release
+# https://pypi.org/project/agent-interlude/. Optionally draft a GitHub release
 # for archeology — the `release` branch's HEAD answers "what's currently
 # on PyPI?" but a tagged release shows up nicer in the repo's release
 # history.
@@ -56,8 +56,8 @@ jobs:
           set -euo pipefail
           WHEEL=$(ls dist/*.whl)
           echo "Inspecting $WHEEL"
-          for f in interlude/__init__.py interlude/__main__.py \
-                   interlude/proxy.py interlude/report.py interlude/analyze.py; do
+          for f in agent_interlude/__init__.py agent_interlude/__main__.py \
+                   agent_interlude/proxy.py agent_interlude/report.py agent_interlude/analyze.py; do
             unzip -l "$WHEEL" | grep -q "$f" || {
               echo "ERROR: $f missing from wheel"
               exit 1
@@ -70,10 +70,10 @@ jobs:
           set -euo pipefail
           uv venv --python 3.12 .smoke
           VIRTUAL_ENV=.smoke uv pip install dist/*.whl
-          ./.smoke/bin/interlude --help > /dev/null
-          ./.smoke/bin/interlude-report --help > /dev/null
-          ./.smoke/bin/interlude-analyze --help > /dev/null
-          ./.smoke/bin/python -m interlude --help > /dev/null
+          ./.smoke/bin/agent-interlude --help > /dev/null
+          ./.smoke/bin/agent-interlude-report --help > /dev/null
+          ./.smoke/bin/agent-interlude-analyze --help > /dev/null
+          ./.smoke/bin/python -m agent_interlude --help > /dev/null
           echo "OK — all 3 console scripts + python -m form work"
 
       - uses: actions/upload-artifact@v4
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: release
-      url: https://pypi.org/project/interlude/
+      url: https://pypi.org/project/agent-interlude/
     permissions:
       id-token: write
     steps:

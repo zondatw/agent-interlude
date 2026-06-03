@@ -22,9 +22,9 @@ Do this once per index, before the first publish.
 1. Log in to <https://test.pypi.org/> as the project owner.
 2. Account → **Publishing** → *Add a new pending publisher*.
 3. Fill in:
-   - PyPI project name: `interlude`
+   - PyPI project name: `agent-interlude`
    - Owner: `zondatw`
-   - Repository: `interlude`
+   - Repository: `agent-interlude`
    - Workflow filename: `beta.yml`
    - Environment: `testpypi`
 4. Save.
@@ -60,21 +60,21 @@ the Actions UI and waits for "Approve" — protects against an accidental
 git checkout beta
 git merge main --ff-only
 git push
-# wait for green CI; eyeball https://test.pypi.org/project/interlude/
+# wait for green CI; eyeball https://test.pypi.org/project/agent-interlude/
 
 # 2. verify the test install actually works on a fresh shell
 pipx install \
   --index-url https://test.pypi.org/simple/ \
   --pip-args="--extra-index-url https://pypi.org/simple/" \
-  interlude
-interlude --help
+  agent-interlude
+agent-interlude --help
 
 # 3. only when satisfied → forward to release → triggers pypi.org publish
 git checkout release
 git merge beta --ff-only
 git push
 # Actions run pauses for your approve — click it once you're sure.
-# wait for green; verify https://pypi.org/project/interlude/
+# wait for green; verify https://pypi.org/project/agent-interlude/
 
 # 4. (optional, nice for the GitHub release page)
 git tag v0.2.0
@@ -94,7 +94,7 @@ worth of bookkeeping in exchange.
 | Symptom | Cause / fix |
 |---|---|
 | `ERROR: HTTPError: 403 ... Trusted publisher invalid` | Pending publisher not yet set up on the index (see *One-time setup*), or workflow filename / environment name in the publisher config doesn't match the actual workflow. |
-| `interlude` not on PATH after `pipx install` | pipx's bin dir isn't on PATH → run `pipx ensurepath` once, then open a new shell. |
+| `agent-interlude` not on PATH after `pipx install` | pipx's bin dir isn't on PATH → run `pipx ensurepath` once, then open a new shell. |
 | Test install fails with "No matching distribution" | The TestPyPI publish step succeeded but the index is eventually consistent — wait ~30s and retry. |
 | Version bump forgotten → push to `beta` re-publishes the same version | Test/prod PyPI both reject re-uploading an existing version. Bump `pyproject.toml [project].version`, force-push beta if you haven't shared the branch. |
 
@@ -102,7 +102,7 @@ worth of bookkeeping in exchange.
 
 - **Auto-version-bump from commits** — explicit bumps force you to
   think about semver impact (breaking change vs feature vs fix).
-- **CHANGELOG generation** — interlude's history lives in PR titles +
+- **CHANGELOG generation** — agent-interlude's history lives in PR titles +
   git log; a CHANGELOG file would duplicate that.
-- **conda-forge / homebrew submission** — interlude is a 5-file
+- **conda-forge / homebrew submission** — agent-interlude is a 5-file
   zero-dep tool; PyPI + pipx is the right surface.

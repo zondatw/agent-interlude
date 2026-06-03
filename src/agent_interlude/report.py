@@ -1,6 +1,6 @@
 """Interlude analysis web UI — a local browser-facing view over the JSONL logs.
 
-A tiny stdlib HTTP server that reads .interlude/log-*.jsonl and renders:
+A tiny stdlib HTTP server that reads .agent-interlude/log-*.jsonl and renders:
 
   HTML                              JSON twin                       what
   /                                 /api/                           overview + per-agent stats
@@ -35,7 +35,7 @@ from collections import Counter, OrderedDict, defaultdict
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-from interlude.analyze import skeleton, system_text, tool_names, tool_schema_key
+from agent_interlude.analyze import skeleton, system_text, tool_names, tool_schema_key
 
 # =============================================================================
 # DATA — log loading, grouping, per-agent aggregation
@@ -3761,7 +3761,7 @@ def _spawn_source_watcher(sources):
                     continue
                 if mtime_now != mtime0:
                     print(
-                        f"[interlude-report] {os.path.basename(path)} changed — restarting",
+                        f"[agent-interlude-report] {os.path.basename(path)} changed — restarting",
                         flush=True,
                     )
                     # os.execv replaces this process image; the listening
@@ -3769,19 +3769,19 @@ def _spawn_source_watcher(sources):
                     # part of the exec, then re-bound by the fresh process.
                     os.execv(sys.executable, [sys.executable, *sys.argv])
 
-    t = threading.Thread(target=watch, daemon=True, name="interlude-reload")
+    t = threading.Thread(target=watch, daemon=True, name="agent-interlude-reload")
     t.start()
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Interlude analysis web UI.")
+    ap = argparse.ArgumentParser(description="agent-interlude analysis web UI.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sv = sub.add_parser("serve", help="run the local web UI")
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument(
         "--logs",
-        default=".interlude/log-*.jsonl",
-        help="glob for JSONL files (default: .interlude/log-*.jsonl)",
+        default=".agent-interlude/log-*.jsonl",
+        help="glob for JSONL files (default: .agent-interlude/log-*.jsonl)",
     )
     sv.add_argument(
         "--no-reload",
@@ -3792,8 +3792,8 @@ def main():
 
     if args.cmd == "serve":
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(args.logs))
-        print(f"[interlude-report] http://127.0.0.1:{args.port}", flush=True)
-        print(f"[interlude-report] watching {args.logs}", flush=True)
+        print(f"[agent-interlude-report] http://127.0.0.1:{args.port}", flush=True)
+        print(f"[agent-interlude-report] watching {args.logs}", flush=True)
         if not args.no_reload:
             # Watch report.py itself + analyze.py (whose helpers we import).
             # Both are absolute so cwd changes don't matter. The watcher is
@@ -3802,20 +3802,20 @@ def main():
             # the watcher fires zero times and costs nothing.
             sources = [os.path.abspath(__file__)]
             try:
-                from interlude import analyze as _analyze_mod
+                from agent_interlude import analyze as _analyze_mod
 
                 sources.append(os.path.abspath(_analyze_mod.__file__))
             except Exception:
                 pass
             _spawn_source_watcher(sources)
             print(
-                "[interlude-report] auto-reload on (disable with --no-reload)",
+                "[agent-interlude-report] auto-reload on (disable with --no-reload)",
                 flush=True,
             )
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            print("\n[interlude-report] shutting down", flush=True)
+            print("\n[agent-interlude-report] shutting down", flush=True)
             httpd.shutdown()
 
 

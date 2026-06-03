@@ -1,5 +1,7 @@
 CLAUDE.md
 AGENTS.md
+.agent-interlude/
 .interlude/
 .venv/
 __pycache__/
+dist/
