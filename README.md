@@ -1,8 +1,8 @@
-# Interlude
+# agent-interlude
 
 English · **[繁體中文](README.zh-TW.md)**
 
-Interlude intercepts the traffic between an AI coding agent (**Claude Code**,
+agent-interlude intercepts the traffic between an AI coding agent (**Claude Code**,
 **Codex**) and its API, persisting the prompt structure (`system` / `tools` /
 `messages`) of every request/response pair as JSONL. Use it to analyze the
 fixed skeleton vs. dynamic slots of a prompt, and to compare across agents.
@@ -10,11 +10,11 @@ fixed skeleton vs. dynamic slots of a prompt, and to compare across agents.
 ## How it works
 
 Both agents let you override the API base URL via an environment variable, so
-no transparent MITM or certificate forgery is needed. Interlude is an
+no transparent MITM or certificate forgery is needed. agent-interlude is an
 **explicit reverse proxy**:
 
 ```
-Claude Code ──(A) plain HTTP──▶ Interlude proxy ──(B) normal HTTPS──▶ api.anthropic.com
+Claude Code ──(A) plain HTTP──▶ agent-interlude proxy ──(B) normal HTTPS──▶ api.anthropic.com
               localhost:8788                      (proxy re-encrypts as the client)
 ```
 
@@ -27,27 +27,27 @@ reassembled and archived once the stream ends. The agent notices nothing.
 
 Install once with [`pipx`](https://pipx.pypa.io/) (recommended) or
 [`uv tool`](https://docs.astral.sh/uv/concepts/tools/) — both put the
-`interlude` command on your PATH in an isolated environment, no
+`agent-interlude` command on your PATH in an isolated environment, no
 project-level setup needed:
 
 ```bash
-pipx install interlude
+pipx install agent-interlude
 # or
-uv tool install interlude
+uv tool install agent-interlude
 ```
 
 Requires Python 3.11+ and the agent CLIs you want to capture
-(`claude` and/or `codex`). Zero runtime dependencies — interlude is
+(`claude` and/or `codex`). Zero runtime dependencies — agent-interlude is
 stdlib-only.
 
-For contributors hacking on interlude itself, see
+For contributors hacking on agent-interlude itself, see
 [Development setup](#development-setup) below.
 
 ## Quick start
 
 ```bash
 # 1. One command: starts the 3 proxy listeners AND the web UI on :8000
-interlude
+agent-interlude
 
 # 2. In another terminal, point Claude Code at it
 ANTHROPIC_BASE_URL=http://localhost:8788 claude
@@ -59,21 +59,21 @@ open http://127.0.0.1:8000/timeline
 On startup the bundled launcher prints:
 
 ```
-[interlude] claude: http://127.0.0.1:8788 -> https://api.anthropic.com
-[interlude] codex:  http://127.0.0.1:8789 -> https://api.openai.com   (Codex + API key)
-[interlude] codex:  http://127.0.0.1:8790 -> https://chatgpt.com      (Codex + ChatGPT login)
-[interlude] logging to .interlude/log-<timestamp>.jsonl
-[interlude] web UI: http://127.0.0.1:8000/timeline (auto-started; disable with --no-ui)
-[interlude-report] http://127.0.0.1:8000
-[interlude-report] watching .interlude/log-*.jsonl
-[interlude-report] auto-reload on (disable with --no-reload)
+[agent-interlude] claude: http://127.0.0.1:8788 -> https://api.anthropic.com
+[agent-interlude] codex:  http://127.0.0.1:8789 -> https://api.openai.com   (Codex + API key)
+[agent-interlude] codex:  http://127.0.0.1:8790 -> https://chatgpt.com      (Codex + ChatGPT login)
+[agent-interlude] logging to .agent-interlude/log-<timestamp>.jsonl
+[agent-interlude] web UI: http://127.0.0.1:8000/timeline (auto-started; disable with --no-ui)
+[agent-interlude-report] http://127.0.0.1:8000
+[agent-interlude-report] watching .agent-interlude/log-*.jsonl
+[agent-interlude-report] auto-reload on (disable with --no-reload)
 ```
 
-`.interlude/log-<timestamp>.jsonl` lands under your current working
-directory (not next to the installed module), so run `interlude` from
+`.agent-interlude/log-<timestamp>.jsonl` lands under your current working
+directory (not next to the installed module), so run `agent-interlude` from
 wherever you want the logs collected.
 
-The web UI runs in a child process. `Ctrl-C` on `interlude` tears down
+The web UI runs in a child process. `Ctrl-C` on `agent-interlude` tears down
 both proxy and UI cleanly.
 
 Each launch opens a fresh log file; every request prints one line such as
@@ -82,22 +82,22 @@ Each launch opens a fresh log file; every request prints one line such as
 Variants:
 
 ```bash
-interlude --no-ui            # proxy-only (e.g. CI / headless capture)
-interlude --ui-port 9000     # bind the UI on a different port
-interlude-report serve       # UI only, against existing logs
-interlude-analyze            # text report, no server
-python -m interlude          # module-form, equivalent to `interlude`
+agent-interlude --no-ui            # proxy-only (e.g. CI / headless capture)
+agent-interlude --ui-port 9000     # bind the UI on a different port
+agent-interlude-report serve       # UI only, against existing logs
+agent-interlude-analyze            # text report, no server
+python -m agent_interlude          # module-form, equivalent to `agent-interlude`
 ```
 
 ## Development setup
 
-To hack on interlude itself, clone and use the source layout directly:
+To hack on agent-interlude itself, clone and use the source layout directly:
 
 ```bash
-git clone https://github.com/zondatw/interlude.git
-cd interlude
+git clone https://github.com/zondatw/agent-interlude.git
+cd agent-interlude
 uv sync                              # installs the package in editable mode
-uv run interlude                     # runs from src/interlude/
+uv run agent-interlude                     # runs from src/agent_interlude/
 ```
 
 For contributors: install [`pre-commit`](https://pre-commit.com/) and
@@ -138,26 +138,26 @@ is recorded too:
 
 ```bash
 codex exec -s read-only \
-  -c model_provider=interlude \
-  -c 'model_providers.interlude.base_url="http://localhost:8790/backend-api/codex"' \
-  -c 'model_providers.interlude.wire_api="responses"' \
+  -c model_provider=agent-interlude \
+  -c 'model_providers.agent-interlude.base_url="http://localhost:8790/backend-api/codex"' \
+  -c 'model_providers.agent-interlude.wire_api="responses"' \
   "say hi"
 ```
 
 For a durable setup, write it into `~/.codex/config.toml`:
 
 ```toml
-[model_providers.interlude]
-name = "Interlude"
+[model_providers.agent-interlude]
+name = "agent-interlude"
 base_url = "http://localhost:8790/backend-api/codex"
 wire_api = "responses"
 ```
 
-Then switch to it per-invocation with `-c model_provider=interlude` (do **not**
+Then switch to it per-invocation with `-c model_provider=agent-interlude` (do **not**
 set a top-level `model_provider`, or Codex breaks whenever the proxy is down):
 
 ```bash
-codex -c model_provider=interlude exec -s read-only "say hi"
+codex -c model_provider=agent-interlude exec -s read-only "say hi"
 ```
 
 #### B. OpenAI API key
@@ -167,9 +167,9 @@ the proxy's **api.openai.com** listener instead (port 8789, path `/v1`):
 
 ```bash
 codex exec -s read-only \
-  -c model_provider=interlude \
-  -c 'model_providers.interlude.base_url="http://localhost:8789/v1"' \
-  -c 'model_providers.interlude.wire_api="responses"' \
+  -c model_provider=agent-interlude \
+  -c 'model_providers.agent-interlude.base_url="http://localhost:8789/v1"' \
+  -c 'model_providers.agent-interlude.wire_api="responses"' \
   "say hi"
 ```
 
@@ -180,7 +180,7 @@ codex exec -s read-only \
 
 ## What gets recorded
 
-Logs live in `.interlude/log-<timestamp>.jsonl`. Each exchange is **two lines**
+Logs live in `.agent-interlude/log-<timestamp>.jsonl`. Each exchange is **two lines**
 paired by `id`:
 
 ```jsonc
@@ -205,10 +205,10 @@ Supported wire formats: `claude-messages` (`/v1/messages`), `codex-responses`
 ## Analysis
 
 ```bash
-interlude-analyze                    # read every log in .interlude
-interlude-analyze --agent claude     # one agent only
-interlude-analyze --max-slots 30     # print more dynamic slots
-interlude-analyze path/to/log.jsonl  # a specific file / glob
+agent-interlude-analyze                    # read every log in .agent-interlude
+agent-interlude-analyze --agent claude     # one agent only
+agent-interlude-analyze --max-slots 30     # print more dynamic slots
+agent-interlude-analyze path/to/log.jsonl  # a specific file / glob
 ```
 
 The report covers:
@@ -230,9 +230,9 @@ skeleton-vs-slot highlighting in context, and a tools schema browser —
 launch the local web UI:
 
 ```bash
-interlude-report serve                  # http://127.0.0.1:8000 (default)
-interlude-report serve --port 9000
-interlude-report serve --logs "other/path/log-*.jsonl"
+agent-interlude-report serve                  # http://127.0.0.1:8000 (default)
+agent-interlude-report serve --port 9000
+agent-interlude-report serve --logs "other/path/log-*.jsonl"
 ```
 
 Routes:
@@ -273,7 +273,7 @@ To confirm each link in the chain by hand (rather than just running
 **Terminal 1** — start the proxy:
 
 ```bash
-interlude
+agent-interlude
 ```
 
 **Terminal 2** — send one message through Claude Code; it should reply `PONG`
@@ -290,7 +290,7 @@ Back in Terminal 1, the proxy console should show a line:
 contents):
 
 ```bash
-LOG=$(ls -t .interlude/log-*.jsonl | head -1)
+LOG=$(ls -t .agent-interlude/log-*.jsonl | head -1)
 uv run python - "$LOG" <<'PY'
 import json, re, sys
 recs = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8")]
@@ -324,14 +324,14 @@ Claude Code's connection pre-check `HEAD /` and can be ignored.)
 **View the structure analysis**:
 
 ```bash
-interlude-analyze
+agent-interlude-analyze
 ```
 
 When done, press `Ctrl-C` in Terminal 1 to shut the proxy down.
 
 ## Security notes
 
-- `.interlude/` contains the **full prompt** (your code, possibly secrets) → it
+- `.agent-interlude/` contains the **full prompt** (your code, possibly secrets) → it
   is gitignored; **do not commit or share it.**
 - Auth headers (`authorization` / `x-api-key` / `cookie`) are forwarded only and
   **never written to the log**; `headers_kept` retains an allowlist of fields
@@ -344,7 +344,7 @@ When done, press `Ctrl-C` in Terminal 1 to shut the proxy down.
 
 ## Adding a new agent
 
-Edit the `LISTENERS` list at the top of `src/interlude/proxy.py` and add a
+Edit the `LISTENERS` list at the top of `src/agent_interlude/proxy.py` and add a
 row `(port, upstream_host, label)`. Wire detection lives in `detect_wire()`,
 and field normalization in `extract()` (requests) and `reconstruct()`
 (responses).
@@ -362,10 +362,10 @@ and field normalization in `extract()` (requests) and `reconstruct()`
 
 | Path | Purpose |
 |---|---|
-| `src/interlude/proxy.py` | Three-listener reverse proxy, streaming relay + SSE tee/reassembly. Entry point: `interlude` |
-| `src/interlude/analyze.py` | Cross-request diff, fixed skeleton vs. dynamic slots, cross-agent comparison (text report). Entry point: `interlude-analyze` |
-| `src/interlude/report.py` | Local web UI (HTML + JSON) over the same analysis. Entry point: `interlude-report` |
+| `src/agent_interlude/proxy.py` | Three-listener reverse proxy, streaming relay + SSE tee/reassembly. Entry point: `agent-interlude` |
+| `src/agent_interlude/analyze.py` | Cross-request diff, fixed skeleton vs. dynamic slots, cross-agent comparison (text report). Entry point: `agent-interlude-analyze` |
+| `src/agent_interlude/report.py` | Local web UI (HTML + JSON) over the same analysis. Entry point: `agent-interlude-report` |
 | `dogfood.sh` | One-command end-to-end verification (contributor-facing, not shipped in the wheel) |
 | `docs/release.md` | PyPI Trusted Publishing setup + per-release flow |
 | `.github/workflows/` | `beta.yml` (push to `beta` → test.pypi.org), `release.yml` (push to `release` → pypi.org) |
-| `.interlude/` | JSONL output, written under the user's cwd (gitignored, sensitive) |
+| `.agent-interlude/` | JSONL output, written under the user's cwd (gitignored, sensitive) |

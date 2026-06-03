@@ -33,10 +33,11 @@ LISTENERS = [
     (8790, "chatgpt.com", "codex"),  # Codex via ChatGPT login (chatgpt_base_url)
 ]
 
-# `.interlude/` lives under the *user's cwd*, not next to the installed module —
-# otherwise an `interlude` invoked from any directory would dump logs deep inside
+# `.agent-interlude/` lives under the *user's cwd*, not next to the installed
+# module — otherwise an `agent-interlude` invoked from any directory would dump
+# logs deep inside
 # site-packages. Same behavior as before for users running from the repo root.
-LOG_DIR = os.path.join(os.getcwd(), ".interlude")
+LOG_DIR = os.path.join(os.getcwd(), ".agent-interlude")
 LOG_PATH = None  # set in main()
 LOG_LOCK = threading.Lock()
 
@@ -274,7 +275,7 @@ def log_request(xid, agent, wire, method, path, headers, body):
             }
         )
     except Exception as e:  # logging must never break the proxy
-        print(f"[interlude] log_request error: {e}", flush=True)
+        print(f"[agent-interlude] log_request error: {e}", flush=True)
 
 
 def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", error=None):
@@ -331,7 +332,7 @@ def log_response(xid, agent, wire, status, ctype, body, truncated, cenc="", erro
             rec["truncated"] = True
         _append(rec)
     except Exception as e:
-        print(f"[interlude] log_response error: {e}", flush=True)
+        print(f"[agent-interlude] log_response error: {e}", flush=True)
 
 
 # --- proxy handler ----------------------------------------------------------
@@ -375,7 +376,7 @@ def make_handler(upstream_host, agent_label):
             # Footgun guard: a ChatGPT-login token 401s against api.openai.com.
             if self.AGENT == "codex" and resp.status == 401 and self.UPSTREAM == "api.openai.com":
                 print(
-                    "[interlude] hint: Codex got 401 from api.openai.com. If you log in "
+                    "[agent-interlude] hint: Codex got 401 from api.openai.com. If you log in "
                     "with ChatGPT (no API key), use route A — base_url "
                     "http://localhost:8790/backend-api/codex",
                     flush=True,
@@ -412,7 +413,7 @@ def make_handler(upstream_host, agent_label):
                     self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
             except Exception as e:
-                print(f"[interlude] relay interrupted: {e}", flush=True)
+                print(f"[agent-interlude] relay interrupted: {e}", flush=True)
             finally:
                 conn.close()
                 log_response(
@@ -431,7 +432,7 @@ def make_handler(upstream_host, agent_label):
 
 
 def _spawn_ui(port, logs_glob):
-    """Spawn `interlude.report serve` as a child process so the user gets
+    """Spawn `agent_interlude.report serve` as a child process so the user gets
     capture + web UI from one command. The child runs in its own Python
     process, so its own auto-reload watcher can re-exec on report.py edits
     WITHOUT touching the proxy — keeping live SSE streams intact.
@@ -440,14 +441,14 @@ def _spawn_ui(port, logs_glob):
     that re-prints each line so proxy and UI logs interleave readably in one
     terminal.
 
-    Module-form invocation (`-m interlude.report`) works both when running
+    Module-form invocation (`-m agent_interlude.report`) works both when running
     from a wheel install (site-packages) and from a source checkout via
-    `uv run interlude`. Path-based invocation broke under the wheel."""
+    `uv run agent-interlude`. Path-based invocation broke under the wheel."""
     proc = subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "interlude.report",
+            "agent_interlude.report",
             "serve",
             "--port",
             str(port),
@@ -461,7 +462,7 @@ def _spawn_ui(port, logs_glob):
     )
 
     def _pump():
-        # report.py prints its own `[interlude-report] ...` banner; just
+        # report.py prints its own `[agent-interlude-report] ...` banner; just
         # re-stream those lines verbatim. If the child dies, the loop exits
         # naturally and the supervisor in main() notices via poll().
         assert proc.stdout is not None
@@ -476,7 +477,9 @@ def _spawn_ui(port, logs_glob):
 def main():
     global LOG_PATH
 
-    ap = argparse.ArgumentParser(description="Interlude — agent <-> API capture proxy + web UI.")
+    ap = argparse.ArgumentParser(
+        description="agent-interlude — agent <-> API capture proxy + web UI."
+    )
     ap.add_argument(
         "--no-ui",
         action="store_true",
@@ -504,15 +507,15 @@ def main():
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), make_handler(host, label))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         servers.append(httpd)
-        print(f"[interlude] {label}: http://127.0.0.1:{port} -> https://{host}", flush=True)
-    print(f"[interlude] logging to {LOG_PATH}", flush=True)
+        print(f"[agent-interlude] {label}: http://127.0.0.1:{port} -> https://{host}", flush=True)
+    print(f"[agent-interlude] logging to {LOG_PATH}", flush=True)
 
     ui_proc = None
     if not args.no_ui:
         logs_glob = args.logs_glob or f"{LOG_DIR}/log-*.jsonl"
         ui_proc = _spawn_ui(args.ui_port, logs_glob)
         print(
-            f"[interlude] web UI: http://127.0.0.1:{args.ui_port}/timeline "
+            f"[agent-interlude] web UI: http://127.0.0.1:{args.ui_port}/timeline "
             f"(auto-started; disable with --no-ui)",
             flush=True,
         )
@@ -524,12 +527,12 @@ def main():
                 # Child died on its own (crash, manual kill, port collision).
                 # Surface the exit code and stop supervising; proxy keeps going.
                 print(
-                    f"[interlude] web UI exited with code {ui_proc.returncode}",
+                    f"[agent-interlude] web UI exited with code {ui_proc.returncode}",
                     flush=True,
                 )
                 ui_proc = None
     except KeyboardInterrupt:
-        print("\n[interlude] shutting down", flush=True)
+        print("\n[agent-interlude] shutting down", flush=True)
         if ui_proc is not None and ui_proc.poll() is None:
             ui_proc.terminate()
             try:

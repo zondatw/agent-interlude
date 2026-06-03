@@ -30,13 +30,13 @@ for p in $PROXY_PORTS; do
   fi
 done
 
-mkdir -p .interlude
+mkdir -p .agent-interlude
 
 # --- start proxy ---
 echo "==> starting proxy"
 # --no-ui keeps dogfood headless — no need to bind port 8000 just to make
 # one round-trip call.
-uv run interlude --no-ui > .interlude/_dogfood-proxy.log 2>&1 &
+uv run agent-interlude --no-ui > .agent-interlude/_dogfood-proxy.log 2>&1 &
 PROXY_PID=$!
 cleanup() { kill "$PROXY_PID" 2>/dev/null; }
 trap cleanup EXIT
@@ -46,7 +46,7 @@ for _ in $(seq 1 25); do
   sleep 0.2
 done
 if ! all_bound; then
-  echo "FAIL: proxy did not bind all ports ($PROXY_PORTS). Output:"; cat .interlude/_dogfood-proxy.log
+  echo "FAIL: proxy did not bind all ports ($PROXY_PORTS). Output:"; cat .agent-interlude/_dogfood-proxy.log
   exit 1
 fi
 
@@ -54,12 +54,12 @@ fi
 # first request, so we must not guess via `ls -t`, which could pick a stale run).
 LOG=""
 for _ in $(seq 1 25); do
-  LOG=$(sed -n 's/.*logging to \(.*\)$/\1/p' .interlude/_dogfood-proxy.log | tail -1)
+  LOG=$(sed -n 's/.*logging to \(.*\)$/\1/p' .agent-interlude/_dogfood-proxy.log | tail -1)
   [ -n "$LOG" ] && break
   sleep 0.2
 done
 if [ -z "$LOG" ]; then
-  echo "FAIL: proxy did not announce a log path. Output:"; cat .interlude/_dogfood-proxy.log
+  echo "FAIL: proxy did not announce a log path. Output:"; cat .agent-interlude/_dogfood-proxy.log
   exit 1
 fi
 echo "==> capturing to: $LOG"
@@ -74,10 +74,10 @@ echo "    claude replied: ${CLAUDE_OUT}"
 #     built-in openai provider, so we must define our own) ---
 echo "==> Codex through proxy (ChatGPT-login backend)"
 ( cd /tmp && codex exec -s read-only --skip-git-repo-check \
-    -c model_provider=interlude \
-    -c 'model_providers.interlude.name="Interlude"' \
-    -c "model_providers.interlude.base_url=\"http://localhost:$CODEX_PORT/backend-api/codex\"" \
-    -c 'model_providers.interlude.wire_api="responses"' \
+    -c model_provider=agent-interlude \
+    -c 'model_providers.agent-interlude.name="agent-interlude"' \
+    -c "model_providers.agent-interlude.base_url=\"http://localhost:$CODEX_PORT/backend-api/codex\"" \
+    -c 'model_providers.agent-interlude.wire_api="responses"' \
     -m gpt-5.5 \
     "Reply with exactly the word PONG and nothing else." >/dev/null 2>&1 )
 echo "    codex exit: $?"

@@ -1,5 +1,5 @@
 [project]
-name = "interlude"
+name = "agent-interlude"
 version = "0.1.0"
 description = "Intercept and log AI coding agent <-> API traffic for prompt-architecture analysis."
 readme = "README.md"
@@ -35,18 +35,18 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/zondatw/interlude"
-Repository = "https://github.com/zondatw/interlude"
-Issues = "https://github.com/zondatw/interlude/issues"
+Homepage = "https://github.com/zondatw/agent-interlude"
+Repository = "https://github.com/zondatw/agent-interlude"
+Issues = "https://github.com/zondatw/agent-interlude/issues"
 
 [project.scripts]
-# `interlude` is the headline command — bundled launcher (proxy + UI). The
-# other two map 1:1 to the per-module main()s so power users can run them
-# independently (e.g. UI-only against an existing log set, or a one-shot
-# text report from CI).
-interlude = "interlude.proxy:main"
-interlude-report = "interlude.report:main"
-interlude-analyze = "interlude.analyze:main"
+# `agent-interlude` is the headline command — bundled launcher (proxy + UI).
+# The other two map 1:1 to the per-module main()s so power users can run
+# them independently (e.g. UI-only against an existing log set, or a
+# one-shot text report from CI).
+agent-interlude = "agent_interlude.proxy:main"
+agent-interlude-report = "agent_interlude.report:main"
+agent-interlude-analyze = "agent_interlude.analyze:main"
 
 [build-system]
 # Hatchling is uv's default backend and the modern choice — minimal config,
@@ -59,14 +59,14 @@ build-backend = "hatchling.build"
 # Explicit src-layout package mapping. Without this hatchling would look for
 # top-level packages by name and fail because the project root only contains
 # the source under src/.
-packages = ["src/interlude"]
+packages = ["src/agent_interlude"]
 
 [tool.hatch.build.targets.sdist]
 # What ships in the source distribution. Same as default plus we want to
 # ensure docs/ and contributor scripts are included so a sdist tarball is a
 # complete working copy.
 include = [
-    "src/interlude",
+    "src/agent_interlude",
     "README.md",
     "README.zh-TW.md",
     "LICENSE",

@@ -10,11 +10,11 @@
 #   git push                # ← this is the trigger
 #
 # After the workflow goes green, eyeball
-# https://test.pypi.org/project/interlude/ in a browser. If the README
+# https://test.pypi.org/project/agent-interlude/ in a browser. If the README
 # renders, license shows MIT, and `pipx install --index-url
 # https://test.pypi.org/simple/ --pip-args="--extra-index-url
-# https://pypi.org/simple/" interlude` works in a fresh shell → safe to
-# forward to the `release` branch.
+# https://pypi.org/simple/" agent-interlude` works in a fresh shell → safe
+# to forward to the `release` branch.
 #
 # Auth: PyPI Trusted Publishing (OIDC). No long-lived TWINE_PASSWORD in
 # repo secrets — GitHub mints a short-lived token at publish time, and
@@ -59,8 +59,8 @@ jobs:
           set -euo pipefail
           WHEEL=$(ls dist/*.whl)
           echo "Inspecting $WHEEL"
-          for f in interlude/__init__.py interlude/__main__.py \
-                   interlude/proxy.py interlude/report.py interlude/analyze.py; do
+          for f in agent_interlude/__init__.py agent_interlude/__main__.py \
+                   agent_interlude/proxy.py agent_interlude/report.py agent_interlude/analyze.py; do
             unzip -l "$WHEEL" | grep -q "$f" || {
               echo "ERROR: $f missing from wheel"
               exit 1
@@ -73,10 +73,10 @@ jobs:
           set -euo pipefail
           uv venv --python 3.12 .smoke
           VIRTUAL_ENV=.smoke uv pip install dist/*.whl
-          ./.smoke/bin/interlude --help > /dev/null
-          ./.smoke/bin/interlude-report --help > /dev/null
-          ./.smoke/bin/interlude-analyze --help > /dev/null
-          ./.smoke/bin/python -m interlude --help > /dev/null
+          ./.smoke/bin/agent-interlude --help > /dev/null
+          ./.smoke/bin/agent-interlude-report --help > /dev/null
+          ./.smoke/bin/agent-interlude-analyze --help > /dev/null
+          ./.smoke/bin/python -m agent_interlude --help > /dev/null
           echo "OK — all 3 console scripts + python -m form work"
 
       - uses: actions/upload-artifact@v4
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/interlude/
+      url: https://test.pypi.org/project/agent-interlude/
     permissions:
       id-token: write
     steps:

@@ -8,10 +8,10 @@ SLOTS (vary between requests), and how Claude Code and Codex differ structurally
 Decoupled from interception — it only reads files. Pure stdlib.
 
 Usage:
-    uv run analyze.py                       # all .interlude/log-*.jsonl
-    uv run analyze.py path/to/log.jsonl ... # specific files/globs
-    uv run analyze.py --agent claude        # filter to one agent
-    uv run analyze.py --max-slots 30        # show more dynamic-slot lines
+    agent-interlude-analyze                       # all .agent-interlude/log-*.jsonl
+    agent-interlude-analyze path/to/log.jsonl ... # specific files/globs
+    agent-interlude-analyze --agent claude        # filter to one agent
+    agent-interlude-analyze --max-slots 30        # show more dynamic-slot lines
 """
 
 import argparse
@@ -242,12 +242,12 @@ def cross_agent(all_facts):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Analyze Interlude JSONL captures.")
+    ap = argparse.ArgumentParser(description="Analyze agent-interlude JSONL captures.")
     ap.add_argument(
         "paths",
         nargs="*",
-        default=[".interlude/log-*.jsonl"],
-        help="JSONL files or globs (default: .interlude/log-*.jsonl)",
+        default=[".agent-interlude/log-*.jsonl"],
+        help="JSONL files or globs (default: .agent-interlude/log-*.jsonl)",
     )
     ap.add_argument("--agent", help="only analyze this agent label")
     ap.add_argument(
