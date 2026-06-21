@@ -12,12 +12,12 @@ fixed skeleton vs. dynamic slots of a prompt, and to compare across agents.
 The built-in web UI (`agent-interlude-report serve`) is a dark monitoring console
 for browsing captured traffic.
 
-![Timeline view of captured agent traffic](https://raw.githubusercontent.com/zondatw/agent-interlude/main/docs/images/timeline.png)
+![Timeline view of captured agent traffic](docs/images/timeline.png)
 
 *Timeline — per-model token usage and cache-hit rate, stop-reason breakdown, a
 token-usage chart, and every request/response grouped into sessions and threads.*
 
-![Per-session conversation graph](https://raw.githubusercontent.com/zondatw/agent-interlude/main/docs/images/graph.png)
+![Per-session conversation graph](docs/images/graph.png)
 
 *Conversation graph — one session projected as nodes and edges: continuations,
 retries, and the tools invoked at each step.*
