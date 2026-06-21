@@ -9,4 +9,4 @@ This package exposes three entry points (declared in pyproject.toml):
 Each module is also runnable as `python -m agent_interlude.<name>` for diagnostics.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
