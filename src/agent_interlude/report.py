@@ -2420,7 +2420,7 @@ def render_overview(m, ctx=None):
     if not facts:
         body.append(
             "<p>No analyzable records yet. Start the proxy "
-            "(<code>uv run proxy.py</code>) and capture some traffic.</p>"
+            "(<code>agent-interlude</code>) and capture some traffic.</p>"
         )
     else:
         body.append(
