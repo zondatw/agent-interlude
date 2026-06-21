@@ -7,6 +7,21 @@ agent-interlude intercepts the traffic between an AI coding agent (**Claude Code
 `messages`) of every request/response pair as JSONL. Use it to analyze the
 fixed skeleton vs. dynamic slots of a prompt, and to compare across agents.
 
+## Screenshots
+
+The built-in web UI (`agent-interlude-report serve`) is a dark monitoring console
+for browsing captured traffic.
+
+![Timeline view of captured agent traffic](https://raw.githubusercontent.com/zondatw/agent-interlude/main/docs/images/timeline.png)
+
+*Timeline — per-model token usage and cache-hit rate, stop-reason breakdown, a
+token-usage chart, and every request/response grouped into sessions and threads.*
+
+![Per-session conversation graph](https://raw.githubusercontent.com/zondatw/agent-interlude/main/docs/images/graph.png)
+
+*Conversation graph — one session projected as nodes and edges: continuations,
+retries, and the tools invoked at each step.*
+
 ## How it works
 
 Both agents let you override the API base URL via an environment variable, so
